@@ -68,6 +68,9 @@ jobs:
           key: libbox-android-go1.25.10-ndk28-${{ hashFiles('patches/**', 'scripts/prepare_core.sh', 'scripts/build_libbox_android.sh') }}
       - uses: android-actions/setup-android@v3
         if: steps.libbox-cache.outputs.cache-hit != 'true'
+        with:
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: 'false'
       - name: Install pinned Android NDK
         if: steps.libbox-cache.outputs.cache-hit != 'true'
         run: sdkmanager 'ndk;28.0.13004108' 'platforms;android-36'
