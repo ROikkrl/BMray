@@ -25,3 +25,6 @@ ios/Runner/GeneratedPluginRegistrant.m
 .env
 .env.*
 packages/vpn_plugin/android/libs/*.aar
+
+# Generated core checksum.
+/packages/vpn_plugin/android/libs/*.aar.sha256

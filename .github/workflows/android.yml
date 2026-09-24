@@ -11,7 +11,8 @@ on:
       - 'android/**'
       - 'packages/**'
       - 'pubspec.*'
-      - 'scripts/build_android*.sh'
+      - 'scripts/**'
+      - 'patches/**'
       - '.github/workflows/android.yml'
 
 permissions:
@@ -24,7 +25,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -50,6 +51,27 @@ jobs:
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/android.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/generic.json
+      - name: Prepare pinned sing-box source
+        run: bash scripts/prepare_core.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.10'
+          cache-dependency-path: build/sing-box/go.sum
+      - name: Test REALITY and HTTPS against Xray 26.9.9
+        run: bash scripts/test_reality.sh
+      - uses: actions/cache@v4
+        id: libbox-cache
+        with:
+          path: |
+            packages/vpn_plugin/android/libs/libbox.aar
+            packages/vpn_plugin/android/libs/libbox.aar.sha256
+          key: libbox-android-go1.25.10-ndk28-${{ hashFiles('patches/**', 'scripts/prepare_core.sh', 'scripts/build_libbox_android.sh') }}
+      - name: Install pinned Android NDK
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: sdkmanager 'ndk;28.0.13004108' 'platforms;android-36'
+      - name: Build patched Android core
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build_libbox_android.sh
       - name: Build test-signed APK and AAB
         run: bash scripts/build_android_test.sh
       - name: Upload test packages
