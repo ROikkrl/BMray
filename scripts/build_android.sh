@@ -7,6 +7,6 @@ cd "$(dirname "$0")/.."
 : "${BMRAY_KEY_PASSWORD:?Укажите BMRAY_KEY_PASSWORD}"
 test -f "$BMRAY_KEYSTORE_FILE" || { echo "Keystore не найден: $BMRAY_KEYSTORE_FILE" >&2; exit 1; }
 flutter pub get
-flutter build apk --release
-flutter build appbundle --release
+flutter build apk --release --no-pub
+flutter build appbundle --release --no-pub
 echo "Готово: build/app/outputs/flutter-apk/app-release.apk и build/app/outputs/bundle/release/app-release.aab"

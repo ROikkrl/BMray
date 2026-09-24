@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 group = "dev.flexvpn.flutter_singbox_vpn"
 version = "1.0-SNAPSHOT"
 
@@ -66,7 +68,7 @@ if (!resolvedAar.exists()) {
 }
 val expectedSha = (project.findProperty("singboxLibboxSha256") as String?)
     ?: "9aad340b455515811d37b38206d9dd8806a06ed3ac61e8284afc782a1aff37b4"
-val actualSha = java.security.MessageDigest.getInstance("SHA-256")
+val actualSha = MessageDigest.getInstance("SHA-256")
     .digest(resolvedAar.readBytes()).joinToString("") { "%02x".format(it) }
 require(actualSha.equals(expectedSha, ignoreCase = true)) {
     "libbox.aar checksum mismatch: expected $expectedSha, got $actualSha"

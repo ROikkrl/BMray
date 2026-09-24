@@ -16,3 +16,12 @@ ios/Runner/Runner.entitlements
 *.mobileprovision
 *.pem
 *.key
+android/.gradle/
+android/.kotlin/
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+ios/Flutter/ephemeral/
+ios/Runner/GeneratedPluginRegistrant.h
+ios/Runner/GeneratedPluginRegistrant.m
+.env
+.env.*
+packages/vpn_plugin/android/libs/*.aar
