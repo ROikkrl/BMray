@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - 'lib/**'
+      - 'test/**'
+      - 'tool/**'
       - 'android/**'
       - 'packages/**'
       - 'pubspec.*'
@@ -38,6 +40,16 @@ jobs:
         run: flutter pub get
       - name: Analyze Flutter code
         run: flutter analyze
+      - name: Test imports and VPN configuration
+        run: flutter test
+      - name: Validate generated configs with sing-box 1.13.13
+        run: |
+          dart tool/config_fixtures.dart
+          curl -fsSL --retry 3 https://github.com/SagerNet/sing-box/releases/download/v1.13.13/sing-box-1.13.13-linux-amd64.tar.gz -o /tmp/sing-box.tar.gz
+          echo 'bb99cabf47694625db421ee17898f36cdc1f9c2cb5decf65b12bac8d8437e842  /tmp/sing-box.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/sing-box.tar.gz -C /tmp
+          /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/android.json
+          /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/generic.json
       - name: Build test-signed APK and AAB
         run: bash scripts/build_android_test.sh
       - name: Upload test packages

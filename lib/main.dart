@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
@@ -94,7 +96,7 @@ class _HomePageState extends State<HomePage> {
     final shouldImport = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Добавить подписку'),
+        title: const Text('Добавить подключение'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -111,8 +113,8 @@ class _HomePageState extends State<HomePage> {
               autocorrect: false,
               enableSuggestions: false,
               decoration: const InputDecoration(
-                labelText: 'Ссылка HTTPS',
-                hintText: 'https://…',
+                labelText: 'Подписка или ссылка сервера',
+                hintText: 'https://… или vless://…',
               ),
             ),
           ],
@@ -175,7 +177,10 @@ class _HomePageState extends State<HomePage> {
     if (item == null || item.nodes.isEmpty || _status.state.isBusy) return;
     await _perform(() async {
       final node = item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
-      final config = buildSingboxConfigJson(node);
+      final config = buildSingboxConfigJson(
+        node,
+        options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid),
+      );
       final validationError = await _vpn.validateConfig(config);
       if (validationError != null) throw FormatException(validationError);
       await _vpn.start(config, name: 'BMray');
@@ -191,6 +196,52 @@ class _HomePageState extends State<HomePage> {
       await _store.save(_subscriptions);
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _showLogs() async {
+    final logs = await _vpn.readLogs();
+    if (!mounted) return;
+    // Never display/copy a complete share link or a user UUID.
+    final safeLogs = logs
+        .replaceAll(
+          RegExp(r'(?:vless|vmess|trojan|ss|hy2|hysteria2|tuic)://\S+'),
+          '[ссылка скрыта]',
+        )
+        .replaceAll(
+          RegExp(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'),
+          '[UUID скрыт]',
+        );
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Журнал подключения'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              safeLogs.isEmpty
+                  ? 'Журнал пуст. Попробуйте подключиться и открыть сайт.'
+                  : safeLogs,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: safeLogs.isEmpty
+                ? null
+                : () async {
+                    await Clipboard.setData(ClipboardData(text: safeLogs));
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  },
+            child: const Text('Копировать'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _remove() async {
@@ -250,7 +301,12 @@ class _HomePageState extends State<HomePage> {
         ),
         actions: [
           IconButton(
-            tooltip: 'Добавить подписку',
+            tooltip: 'Журнал подключения',
+            onPressed: _showLogs,
+            icon: const Icon(Icons.article_outlined),
+          ),
+          IconButton(
+            tooltip: 'Добавить подключение',
             onPressed: _busy ? null : _add,
             icon: const Icon(Icons.add_link_rounded),
           ),
@@ -302,7 +358,7 @@ class _HomePageState extends State<HomePage> {
             Center(
               child: Text(
                 item == null
-                    ? 'Добавьте ссылку подписки, чтобы начать'
+                    ? 'Добавьте подписку или ссылку сервера, чтобы начать'
                     : 'Выберите сервер и нажмите кнопку подключения',
                 textAlign: TextAlign.center,
               ),
@@ -328,13 +384,15 @@ class _HomePageState extends State<HomePage> {
               children: [
                 const Expanded(
                   child: Text(
-                    'Подписка',
+                    'Подключения',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                 ),
                 IconButton(
                   tooltip: 'Обновить',
-                  onPressed: canChange && item != null ? _refresh : null,
+                  onPressed: canChange && item != null && item.isRemote
+                      ? _refresh
+                      : null,
                   icon: const Icon(Icons.refresh),
                 ),
                 IconButton(
@@ -349,7 +407,7 @@ class _HomePageState extends State<HomePage> {
                 child: Padding(
                   padding: EdgeInsets.all(18),
                   child: Text(
-                    'Нажмите + и вставьте HTTPS-ссылку, полученную в VPN боте.',
+                    'Нажмите + и вставьте HTTPS-подписку или ссылку сервера VLESS, VMess, Trojan, Shadowsocks, Hysteria2 или TUIC.',
                   ),
                 ),
               )

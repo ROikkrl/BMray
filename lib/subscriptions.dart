@@ -19,6 +19,8 @@ class Subscription {
   String url;
   List<Map<String, dynamic>> nodes;
 
+  bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
+
   factory Subscription.fromJson(Map<String, dynamic> value) => Subscription(
     id: value['id'] as String,
     name: value['name'] as String,
@@ -54,12 +56,40 @@ class SubscriptionStore {
   );
 
   Future<Subscription> import(String name, String url) async {
-    final normalized = Uri.tryParse(url.trim());
+    final input = url.trim();
+    final normalized = Uri.tryParse(input);
+    const shareSchemes = {
+      'vless',
+      'vmess',
+      'trojan',
+      'ss',
+      'hysteria2',
+      'hy2',
+      'tuic',
+    };
+    if (normalized != null && shareSchemes.contains(normalized.scheme)) {
+      final node = parseShareLink(input);
+      if (node == null) {
+        throw const FormatException(
+          'Не удалось разобрать ссылку сервера. Проверьте, что она скопирована полностью.',
+        );
+      }
+      return Subscription(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        name: name.trim().isEmpty
+            ? (node['tag'] ?? 'Сервер').toString()
+            : name.trim(),
+        url: input,
+        nodes: [node],
+      );
+    }
     if (normalized == null ||
         normalized.scheme != 'https' ||
         normalized.host.isEmpty ||
         normalized.userInfo.isNotEmpty) {
-      throw const FormatException('Нужна ссылка подписки с адресом https://');
+      throw const FormatException(
+        'Вставьте HTTPS-подписку или ссылку сервера vless://, vmess://, trojan://, ss://, hy2://, tuic://',
+      );
     }
     final nodes = _parse(await _download(normalized));
     if (nodes.isEmpty) {
@@ -76,6 +106,11 @@ class SubscriptionStore {
   }
 
   Future<void> refresh(Subscription item) async {
+    if (!item.isRemote) {
+      throw const FormatException(
+        'Это отдельный сервер. Для изменения импортируйте новую ссылку.',
+      );
+    }
     final nodes = _parse(await _download(Uri.parse(item.url)));
     if (nodes.isEmpty)
       throw const FormatException(

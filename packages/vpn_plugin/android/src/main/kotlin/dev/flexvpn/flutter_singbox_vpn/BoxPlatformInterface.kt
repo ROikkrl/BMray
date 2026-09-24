@@ -4,6 +4,11 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.LinkProperties
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.ParcelFileDescriptor
 import android.system.Os
 import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.ConnectionOwner
@@ -29,6 +34,9 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
     private val connectivity: ConnectivityManager? =
         service.getSystemService(ConnectivityManager::class.java)
     private var monitorCallback: ConnectivityManager.NetworkCallback? = null
+    private var monitorThread: HandlerThread? = null
+    @Volatile private var underlyingNetwork: Network? = null
+    private val resolver = UnderlyingDnsResolver { underlyingNetwork }
 
     // MARK: TUN
 
@@ -91,52 +99,82 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         if (!service.protect(fd)) {
             throw IllegalStateException("protect($fd) failed")
         }
+        val network = underlyingNetwork
+            ?: throw IllegalStateException("No underlying Wi-Fi or mobile network")
+        // Bind only this socket, never the whole process (which must use the VPN).
+        ParcelFileDescriptor.fromFd(fd).use { network.bindSocket(it.fileDescriptor) }
     }
 
     // MARK: default-interface monitor (ConnectivityManager)
 
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
-        val cm = connectivity ?: return
+        val cm = connectivity ?: throw IllegalStateException("ConnectivityManager unavailable")
         val latch = CountDownLatch(1)
+        fun update(network: Network, properties: LinkProperties? = null) {
+            underlyingNetwork = network
+            service.setUnderlyingNetworks(arrayOf(network))
+            if (emit(network, listener, properties)) latch.countDown()
+        }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                emit(network, listener); latch.countDown()
+                update(network)
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                emit(network, listener); latch.countDown()
+                if (network == underlyingNetwork) update(network)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                if (network == underlyingNetwork) update(network, properties)
             }
 
             override fun onLost(network: Network) {
-                listener.updateDefaultInterface("", -1, false, false)
+                // Losing an old network after a handover must not clear the new one.
+                if (network == underlyingNetwork) {
+                    underlyingNetwork = null
+                    service.setUnderlyingNetworks(null)
+                    listener.updateDefaultInterface("", -1, false, false)
+                }
             }
         }
         monitorCallback = callback
-        // Watch the UNDERLYING (non-VPN) network — NOT our own tunnel. Using
-        // registerDefaultNetworkCallback would report the active VPN as the
-        // default once the tunnel is up, so sing-box would bind outbound sockets
-        // back into the tunnel and loop (symptom: connected but no traffic).
+        // Ask Android for the BEST non-VPN network. Listening to every matching
+        // network picks whichever callback arrives last, including idle mobile data.
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
             .build()
-        cm.registerNetworkCallback(request, callback)
-        latch.await(2, TimeUnit.SECONDS)
+        val thread = HandlerThread("bmray-network").also { it.start() }
+        monitorThread = thread
+        val handler = Handler(thread.looper)
+        if (Build.VERSION.SDK_INT >= 31) {
+            cm.registerBestMatchingNetworkCallback(request, callback, handler)
+        } else if (Build.VERSION.SDK_INT >= 26) {
+            cm.requestNetwork(request, callback, handler)
+        } else {
+            cm.requestNetwork(request, callback)
+        }
+        if (!latch.await(5, TimeUnit.SECONDS)) {
+            throw IllegalStateException("Wi-Fi/mobile network is unavailable; check connectivity and retry")
+        }
     }
 
-    private fun emit(network: Network, listener: InterfaceUpdateListener) {
-        val cm = connectivity ?: return
-        val name = cm.getLinkProperties(network)?.interfaceName
+    private fun emit(network: Network, listener: InterfaceUpdateListener, properties: LinkProperties? = null): Boolean {
+        val cm = connectivity ?: return false
+        val name = (properties ?: cm.getLinkProperties(network))?.interfaceName
         if (name == null) {
             service.writeExtLog("monitor: underlying network has no interfaceName yet")
-            return
+            return false
         }
         val caps = cm.getNetworkCapabilities(network)
         val index = try { Os.if_nametoindex(name) } catch (e: Exception) { -1 }
+        if (index <= 0) return false
         val expensive = caps != null &&
             !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         service.writeExtLog("monitor: default underlying iface=$name index=$index expensive=$expensive")
         listener.updateDefaultInterface(name, index, expensive, false)
+        return true
     }
 
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
@@ -147,18 +185,32 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         val cm = connectivity ?: return
         monitorCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {} }
         monitorCallback = null
+        monitorThread?.quitSafely()
+        monitorThread = null
+        underlyingNetwork = null
+        resolver.close()
     }
 
     override fun getInterfaces(): NetworkInterfaceIterator {
         val list = ArrayList<NetworkInterface>()
         try {
-            val nis = java.net.NetworkInterface.getNetworkInterfaces()
-            if (nis != null) {
-                for (ni in nis) {
+            val cm = connectivity
+            if (cm != null) {
+                for (network in cm.allNetworks) {
+                    val caps = cm.getNetworkCapabilities(network) ?: continue
+                    if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+                    val properties = cm.getLinkProperties(network) ?: continue
+                    val ni = java.net.NetworkInterface.getByName(properties.interfaceName) ?: continue
                     if (ni.isLoopback || !ni.isUp) continue
                     val item = NetworkInterface()
                     item.setName(ni.name)
                     item.setIndex(ni.index)
+                    item.setAddresses(ArrayStringIterator(ni.interfaceAddresses.mapNotNull {
+                        val address = it.address.hostAddress?.substringBefore('%') ?: return@mapNotNull null
+                        "$address/${it.networkPrefixLength}"
+                    }))
+                    item.setDNSServer(ArrayStringIterator(properties.dnsServers.mapNotNull { it.hostAddress }))
+                    item.setMetered(!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
                     try { item.setMTU(ni.mtu) } catch (_: Exception) {}
                     // Go net.Flags: Up=1, Broadcast=2, Loopback=4, PointToPoint=8,
                     // Multicast=16, Running=32. sing-box filters out interfaces
@@ -167,7 +219,12 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
                     try { if (ni.supportsMulticast()) flags = flags or 0x10 } catch (_: Exception) {}
                     try { if (ni.isPointToPoint) flags = flags or 0x8 else flags = flags or 0x2 } catch (_: Exception) {}
                     item.setFlags(flags)
-                    item.setType(interfaceType(ni.name))
+                    item.setType(when {
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> io.nekohasekai.libbox.Libbox.InterfaceTypeWIFI
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> io.nekohasekai.libbox.Libbox.InterfaceTypeCellular
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> io.nekohasekai.libbox.Libbox.InterfaceTypeEthernet
+                        else -> io.nekohasekai.libbox.Libbox.InterfaceTypeOther
+                    }.toInt())
                     list.add(item)
                 }
             }
@@ -178,13 +235,12 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         return ArrayInterfaceIterator(list)
     }
 
-    private fun interfaceType(name: String): Int = when {
-        name.startsWith("wlan") -> io.nekohasekai.libbox.Libbox.InterfaceTypeWIFI
-        name.startsWith("rmnet") || name.startsWith("radio") || name.startsWith("ccmni") ||
-            name.startsWith("pdp") || name.startsWith("radio") -> io.nekohasekai.libbox.Libbox.InterfaceTypeCellular
-        name.startsWith("eth") -> io.nekohasekai.libbox.Libbox.InterfaceTypeEthernet
-        else -> io.nekohasekai.libbox.Libbox.InterfaceTypeOther
-    }.toInt()
+    private class ArrayStringIterator(private val values: List<String>) : StringIterator {
+        private var index = 0
+        override fun hasNext(): Boolean = index < values.size
+        override fun next(): String = values[index++]
+        override fun len(): Int = values.size
+    }
 
     private class ArrayInterfaceIterator(private val list: List<NetworkInterface>) :
         NetworkInterfaceIterator {
@@ -201,7 +257,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
     override fun clearDNSCache() {}
     override fun readWIFIState(): WIFIState? = null
     override fun systemCertificates(): StringIterator? = null
-    override fun localDNSTransport(): LocalDNSTransport? = null
+    override fun localDNSTransport(): LocalDNSTransport = resolver
     override fun sendNotification(notification: Notification?) {}
 
     override fun findConnectionOwner(

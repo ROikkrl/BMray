@@ -13,6 +13,7 @@ import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.SetupOptions
 import java.io.File
+import java.util.concurrent.Executors
 
 /// Runs the sing-box core (libbox) inside an Android VpnService.
 class SingBoxVpnService : VpnService() {
@@ -39,6 +40,7 @@ class SingBoxVpnService : VpnService() {
 
     private var commandServer: CommandServer? = null
     private var platform: BoxPlatformInterface? = null
+    private val worker = Executors.newSingleThreadExecutor()
     var tunFd: ParcelFileDescriptor? = null
 
     @Volatile
@@ -71,14 +73,18 @@ class SingBoxVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        try {
-            startBox(config)
-        } catch (e: Exception) {
-            writeExtLog("startTunnel FAILED: ${e.message}")
-            setState("error", e.message)
-            teardownBox()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+        worker.execute {
+            if (!stopping) {
+                try {
+                    startBox(config)
+                } catch (e: Exception) {
+                    writeExtLog("startTunnel FAILED: ${e.message}")
+                    setState("error", e.message)
+                    teardownBox()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -110,7 +116,7 @@ class SingBoxVpnService : VpnService() {
 
         server.startOrReloadService(config, OverrideOptions())
         writeExtLog("tunnel started OK")
-        setState("connected")
+        if (!stopping) setState("connected")
     }
 
     /// Release the box / monitor / tun fd without touching the service lifecycle.
@@ -133,14 +139,13 @@ class SingBoxVpnService : VpnService() {
         if (stopping) return
         stopping = true
         // Tear down off the main thread (closeService/close + settle delay).
-        Thread {
+        worker.execute {
             teardownBox()
             try { File(filesDir, "config.json").delete() } catch (_: Exception) {}
             if (state != "error") setState("disconnected")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-            stopping = false
-        }.start()
+        }
     }
 
     override fun onRevoke() {
@@ -148,7 +153,12 @@ class SingBoxVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        if (commandServer != null) teardownBox()
+        stopping = true
+        worker.execute {
+            teardownBox()
+            if (state != "error") setState("disconnected")
+        }
+        worker.shutdown()
         super.onDestroy()
     }
 
@@ -171,7 +181,9 @@ class SingBoxVpnService : VpnService() {
                 NotificationChannel(CHANNEL_ID, "BMray", NotificationManager.IMPORTANCE_LOW)
             )
         }
-        val notif: Notification = Notification.Builder(this, CHANNEL_ID)
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID)
+            else Notification.Builder(this)
+        val notif: Notification = builder
             .setContentTitle("BMray")
             .setContentText("VPN подключён")
             .setSmallIcon(android.R.drawable.ic_lock_lock)

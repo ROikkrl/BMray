@@ -10,11 +10,15 @@ import 'dart:convert';
 
 /// Tunable options for the generated config.
 class SingboxConfigOptions {
-  /// TUN MTU. Default 9000.
+  /// TUN MTU. Conservative default for mobile networks.
   final int mtu;
 
   /// Whether to assign an IPv6 address to the TUN interface and resolve AAAA.
   final bool enableIpv6;
+
+  /// Resolve the VPN endpoint through the platform's underlying network.
+  /// Requires a native LocalDNSTransport implementation (Android).
+  final bool usePlatformDns;
 
   /// sing-box log level (trace/debug/info/warn/error/fatal/panic). Default 'info'.
   final String logLevel;
@@ -30,8 +34,9 @@ class SingboxConfigOptions {
   final String routeMode;
 
   const SingboxConfigOptions({
-    this.mtu = 9000,
+    this.mtu = 1500,
     this.enableIpv6 = false,
+    this.usePlatformDns = false,
     this.logLevel = 'info',
     this.allowLan = false,
     this.routeMode = 'global',
@@ -43,7 +48,7 @@ class SingboxConfigOptions {
 /// The given [outbound] is cloned (never mutated) and its "tag" is forced to
 /// "proxy". The result contains:
 ///  - log;
-///  - dns (remote DoH via detour "proxy" + local DoH via "direct", with a dns
+///  - dns (remote DoH via detour "proxy" + direct bootstrap DNS, with a dns
 ///    rule resolving the proxy server name via "local" to avoid a loop, final
 ///    remote);
 ///  - one tun inbound (auto_route, strict_route, gvisor stack, mtu from
@@ -102,9 +107,9 @@ Map<String, dynamic> _buildDns(
       // No `detour` here: sing-box 1.13 rejects detour-to-empty-direct-outbound.
       // With no detour the query dials directly by default, which is exactly
       // what bootstraps the proxy server's own name without looping.
-      'type': 'https',
+      'type': options.usePlatformDns ? 'local' : 'https',
       'tag': 'local',
-      'server': '223.5.5.5',
+      if (!options.usePlatformDns) 'server': '1.1.1.1',
     },
   ];
 
@@ -119,7 +124,7 @@ Map<String, dynamic> _buildDns(
       'server': 'local',
     });
   }
-  // Smart mode: resolve China domains via the local (direct, Chinese) resolver.
+  // Smart mode: resolve China domains via the local (direct) resolver.
   if (options.routeMode == 'rule') {
     rules.add({
       'rule_set': ['geosite-cn'],
@@ -162,6 +167,8 @@ Map<String, dynamic> _buildTun(SingboxConfigOptions options) {
 Map<String, dynamic> _buildRoute(SingboxConfigOptions options) {
   final mode = options.routeMode;
   final rules = <Map<String, dynamic>>[
+    // Catch both UDP and TCP DNS before private-address/direct routing.
+    {'port': 53, 'action': 'hijack-dns'},
     // Sniff protocol/destination for all connections.
     {'action': 'sniff'},
     // Hijack DNS queries to the configured DNS module.
@@ -186,7 +193,7 @@ Map<String, dynamic> _buildRoute(SingboxConfigOptions options) {
   final route = <String, dynamic>{
     'auto_detect_interface': true,
     // Required by sing-box 1.12+: resolve the outbound server's DOMAIN via the
-    // local (direct) DoH so the proxy can be dialed. Without this, runtime
+    // local bootstrap resolver so the proxy can be dialed. Without this, runtime
     // dialing fails with "domain resolver not found" — even though `check`
     // only emits a deprecation warning. This is what lets domain-based nodes
     // actually connect on device.
