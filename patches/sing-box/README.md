@@ -17,7 +17,7 @@ Primary implementation references:
 - https://github.com/MetaCubeX/mihomo/pull/2983
 
 `bash scripts/test_reality.sh` runs a pinned Xray 26.9.9 server on loopback.
-It generates ephemeral keys and transfers a 128 KiB HTTPS response over
+It generates ephemeral keys and transfers a 136 KiB HTTPS response over
 VLESS Vision using Firefox and Chrome, then checks rejection of incorrect
 public keys and short IDs. No real subscription data is used in CI.
 
