@@ -180,7 +180,7 @@ class SubscriptionStore {
       final unsupported = standard.where((node) => node['_unsupported_reason'] != null).length;
       return (nodes: standard, name: null,
           notice: unsupported == 0 ? null :
-              '$unsupported из ${standard.length} серверов показаны, но XHTTP требует ядро Xray.',
+              '$unsupported из ${standard.length} серверов используют неподдерживаемый протокол.',
           directRules: <Map<String, dynamic>>[]);
     }
     try {
@@ -188,7 +188,7 @@ class SubscriptionStore {
       final unsupported = nodes.where((node) => node['_unsupported_reason'] != null).length;
       return (nodes: nodes, name: null,
           notice: unsupported == 0 ? null :
-              '$unsupported из ${nodes.length} серверов показаны, но XHTTP требует ядро Xray.',
+              '$unsupported из ${nodes.length} серверов используют неподдерживаемый протокол.',
           directRules: <Map<String, dynamic>>[]);
     } catch (_) {
       return (nodes: <Map<String, dynamic>>[], name: null, notice: null,

@@ -15,6 +15,9 @@ android {
     namespace = "com.bolvankamax.bmray"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

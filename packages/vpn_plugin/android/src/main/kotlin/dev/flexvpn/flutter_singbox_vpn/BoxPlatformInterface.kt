@@ -48,6 +48,9 @@ class BoxPlatformInterface(private val context: Context, private val service: Si
         val builder = vpnService.Builder()
         builder.setMtu(options.getMTU())
         builder.setSession("BMray")
+        // The separate Xray CLI cannot call VpnService.protect on its own sockets.
+        // Exclude only our app UID while it is running; all other apps use TUN.
+        if (vpnService.xrayActive) builder.addDisallowedApplication(context.packageName)
 
         val v4 = options.getInet4Address()
         while (v4.hasNext()) {

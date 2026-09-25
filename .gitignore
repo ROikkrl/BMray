@@ -28,3 +28,4 @@ packages/vpn_plugin/android/libs/*.aar
 
 # Generated core checksum.
 /packages/vpn_plugin/android/libs/*.aar.sha256
+/packages/vpn_plugin/android/src/main/jniLibs/

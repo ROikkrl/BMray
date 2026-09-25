@@ -103,25 +103,26 @@ void main() {
     expect(parseSubscription(link), isEmpty);
     final entry = parseShareLink(link, includeUnsupported: true)!;
     expect(entry['tag'], '🇪🇪 Test');
-    expect(entry['_unsupported_reason'], contains('XHTTP'));
+    expect(entry['transport']['type'], 'xhttp');
+    expect(entry['_unsupported_reason'], isNull);
   });
 
-  test('all 16 named links stay visible; XHTTP entries cannot be dialed', () {
+  test('all 16 named links stay visible; XHTTP entries retain their transport', () {
     final lines = List.generate(16, (index) => realityLink
         .replaceFirst('type=tcp', index.isEven ? 'type=xhttp' : 'type=tcp')
         .replaceFirst('#%F0%9F%87%AA%F0%9F%87%AA%20Test', '#Server-$index'));
     final body = base64Encode(utf8.encode(lines.join('\n')));
     final parsed = parseSubscription(body, includeUnsupported: true);
     expect(parsed, hasLength(16));
-    expect(parsed.where((node) => node['_unsupported_reason'] != null), hasLength(8));
+    expect(parsed.where((node) => node['transport']?['type'] == 'xhttp'), hasLength(8));
     expect(parsed.map((node) => node['tag']),
         List.generate(16, (index) => 'Server-$index'));
   });
 
-  test('an individual XHTTP link imports with an explicit limitation', () async {
+  test('an individual XHTTP link imports with a runnable transport', () async {
     final link = realityLink.replaceFirst('type=tcp', 'type=xhttp');
     final profile = await SubscriptionStore().import('', link);
     expect(profile.nodes, hasLength(1));
-    expect(profile.notice, contains('XHTTP'));
+    expect(profile.nodes.single['transport']['type'], 'xhttp');
   });
 }

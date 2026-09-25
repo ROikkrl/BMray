@@ -37,8 +37,11 @@ class SingboxVpn {
 
   /// Start the tunnel with a complete sing-box configuration (JSON string).
   /// On Android the user is prompted to grant VPN permission the first time.
-  Future<void> start(String configJson, {String name = 'sing-box'}) => _methods
-      .invokeMethod<void>('start', {'config': configJson, 'name': name});
+  Future<void> start(String configJson, {String name = 'sing-box',
+      String? xrayConfig}) => _methods.invokeMethod<void>('start', {
+        'config': configJson, 'name': name,
+        if (xrayConfig != null) 'xrayConfig': xrayConfig,
+      });
 
   /// Convenience: build a config from a single proxy outbound (e.g. the result
   /// of [parseShareLink]) and start the tunnel.
@@ -98,9 +101,10 @@ class SingboxVpn {
   }
 
   /// Real HTTP GET through the selected sing-box outbound; null on timeout/error.
-  Future<ProxyProbeResult> proxyGetDelay(String configJson) async {
+  Future<ProxyProbeResult> proxyGetDelay(String configJson, {String? xrayConfig}) async {
     final result = await _methods.invokeMapMethod<String, dynamic>(
-      'probeProxyGet', {'config': configJson},
+      'probeProxyGet', {'config': configJson,
+        if (xrayConfig != null) 'xrayConfig': xrayConfig},
     );
     return ProxyProbeResult(delay: result?['delay'] as int?,
         reason: result?['reason'] as String?);

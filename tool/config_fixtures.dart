@@ -5,6 +5,7 @@ import '../packages/vpn_plugin/lib/src/share_link_parser.dart';
 import '../packages/vpn_plugin/lib/src/singbox_config.dart';
 import '../test/fixtures.dart';
 import '../lib/xray_subscription.dart';
+import '../lib/xray_bridge.dart';
 
 void main() {
   Directory('build/config-check').createSync(recursive: true);
@@ -24,4 +25,8 @@ void main() {
   final grpcConfig = buildSingboxConfig(xray.nodes[2],
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xray-grpc.json').writeAsStringSync(jsonEncode(grpcConfig));
+  final bridge = buildXrayBridge(xray.nodes[1],
+      options: const SingboxConfigOptions(usePlatformDns: true));
+  File('build/config-check/xhttp-bridge.json').writeAsStringSync(jsonEncode(bridge.singbox));
+  File('build/config-check/xhttp-xray.json').writeAsStringSync(jsonEncode(bridge.xray));
 }

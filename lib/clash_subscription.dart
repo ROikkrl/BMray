@@ -125,7 +125,18 @@ Map<String, dynamic>? convertClashNode(Map raw, {bool includeUnsupported = false
     };
   } else if (network == 'xhttp') {
     if (!includeUnsupported) return null;
-    result['_unsupported_reason'] = 'XHTTP требует ядро Xray';
+    if (result['type'] != 'vless') {
+      result['_unsupported_reason'] = 'Этот протокол XHTTP пока не поддерживается';
+    } else {
+      final opts = raw['xhttp-opts'];
+      result['transport'] = {
+        'type': 'xhttp',
+        if (opts is Map && _nonempty(opts['path'])) 'path': opts['path'],
+        if (opts is Map && _nonempty(opts['host'])) 'host': opts['host'],
+        if (opts is Map && _nonempty(opts['mode'])) 'mode': opts['mode'],
+        if (opts is Map && opts['extra'] is Map) 'extra': opts['extra'],
+      };
+    }
   } else if (network != null && network != 'tcp' && network.isNotEmpty) {
     return null;
   }

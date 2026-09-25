@@ -115,7 +115,9 @@ List<Map<String, dynamic>> _parseSingboxOutbounds(String jsonText,
         if (m['transport'] is Map &&
             (m['transport'] as Map)['type']?.toString().toLowerCase() == 'xhttp') {
           if (!includeUnsupported) continue;
-          m['_unsupported_reason'] = 'XHTTP требует ядро Xray';
+          if (m['type'] != 'vless') {
+            m['_unsupported_reason'] = 'Этот протокол XHTTP пока не поддерживается';
+          }
         }
         result.add(m);
       }
@@ -271,22 +273,51 @@ bool _supportedNetwork(String? network) => const {
   '', 'tcp', 'ws', 'websocket', 'grpc', 'http', 'h2', 'httpupgrade', 'quic',
 }.contains((network ?? 'tcp').toLowerCase());
 
-/// Keep XHTTP entries visible without producing a misleading TCP outbound.
+/// Keep XHTTP parameters intact for the Android Xray bridge.
 Map<String, dynamic>? _unsupportedXhttpLink(String link) {
   final scheme = link.substring(0, link.indexOf('://')).toLowerCase();
-  if (scheme != 'vless' && scheme != 'trojan') return null;
+  if (scheme != 'vless') return null;
   final parts = _parseUriStyle(link, scheme);
   if (parts == null || parts.userInfo.isEmpty ||
       (parts.params['type'] ?? parts.params['net'])?.toLowerCase() != 'xhttp') {
     return null;
   }
-  return {
+  final node = <String, dynamic>{
     'type': scheme,
     'tag': _tagFor(parts),
     'server': parts.host,
     'server_port': parts.port,
-    '_unsupported_reason': 'XHTTP требует ядро Xray',
+    'uuid': _urlDecode(parts.userInfo),
+    'transport': {
+      'type': 'xhttp',
+      'mode': parts.params['mode'] ?? 'auto',
+      'path': parts.params['path'] ?? '/',
+      if (parts.params['host']?.isNotEmpty == true) 'host': parts.params['host'],
+      if (parts.params['extra']?.isNotEmpty == true)
+        'extra': jsonDecode(parts.params['extra']!),
+    },
   };
+  if (parts.params['flow']?.isNotEmpty == true) node['flow'] = parts.params['flow'];
+  final security = (parts.params['security'] ?? 'none').toLowerCase();
+  if (security == 'tls' || security == 'reality') {
+    node['tls'] = {
+      'enabled': true,
+      'server_name': parts.params['sni'] ?? parts.host,
+      if (parts.params['fp']?.isNotEmpty == true)
+        'utls': {'enabled': true, 'fingerprint': parts.params['fp']},
+      if (parts.params['alpn']?.isNotEmpty == true)
+        'alpn': _parseAlpn(parts.params['alpn']),
+      if (_isInsecure(parts.params)) 'insecure': true,
+      if (security == 'reality') 'reality': {
+        'enabled': true,
+        'public_key': parts.params['pbk'] ?? '',
+        'short_id': parts.params['sid'] ?? '',
+        if (parts.params['spx']?.isNotEmpty == true) 'spider_x': parts.params['spx'],
+      },
+    };
+    if (security == 'reality' && (parts.params['pbk'] ?? '').isEmpty) return null;
+  }
+  return node;
 }
 
 // ---------------------------------------------------------------------------

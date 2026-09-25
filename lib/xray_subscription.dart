@@ -1,7 +1,6 @@
 import 'dart:convert';
 
-/// The subset of an Xray client template which the embedded core can run.
-/// Unsupported transports remain visible but cannot be selected for a tunnel.
+/// Client outbounds from an Xray template. XHTTP uses the Android Xray bridge.
 class XrayTemplate {
   const XrayTemplate(this.name, this.nodes, this.directRules, this.notice);
 
@@ -54,9 +53,12 @@ XrayTemplate? parseXrayTemplate(String content) {
       'uuid': uuid,
     };
     if (network == 'xhttp') {
-      node['_unsupported_reason'] = 'XHTTP требует ядро Xray';
+      node['transport'] = {
+        'type': 'xhttp',
+        ...?((settings['xhttpSettings'] as Map?)?.cast<String, dynamic>()),
+      };
+      node['_xray_outbound'] = Map<String, dynamic>.from(entry);
       nodes.add(node);
-      unsupported.add(network);
       continue;
     }
     if (network == 'grpc') {
@@ -142,7 +144,7 @@ XrayTemplate? parseXrayTemplate(String content) {
   }
   final notices = <String>[];
   if (unsupported.isNotEmpty) {
-    notices.add('Серверы ${unsupported.join(', ')} показаны в списке, но подключение через них требует ядро Xray.');
+    notices.add('Серверы ${unsupported.join(', ')} требуют другого транспорта.');
   }
   if (routing is Map && routing['balancers'] is List && (routing['balancers'] as List).isNotEmpty) {
     notices.add('Автоматический балансировщик Xray не перенесён; выберите доступный сервер вручную.');

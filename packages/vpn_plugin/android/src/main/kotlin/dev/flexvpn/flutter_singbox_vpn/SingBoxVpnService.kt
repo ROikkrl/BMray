@@ -24,6 +24,7 @@ class SingBoxVpnService : VpnService() {
         const val ACTION_START = "com.bolvankamax.bmray.action.START"
         const val ACTION_STOP = "com.bolvankamax.bmray.action.STOP"
         const val EXTRA_CONFIG = "config"
+        const val EXTRA_XRAY_CONFIG = "xrayConfig"
 
         private const val CHANNEL_ID = "flexvpn"
         private const val NOTIF_ID = 0x1F1
@@ -42,6 +43,9 @@ class SingBoxVpnService : VpnService() {
 
     private var commandServer: CommandServer? = null
     private var platform: BoxPlatformInterface? = null
+    private var xray: XraySidecar? = null
+    @Volatile var xrayActive: Boolean = false
+        private set
     private val worker = Executors.newSingleThreadExecutor()
     var tunFd: ParcelFileDescriptor? = null
 
@@ -74,6 +78,7 @@ class SingBoxVpnService : VpnService() {
         }
         startForegroundNotification()
         val config = intent.getStringExtra(EXTRA_CONFIG) ?: readSharedConfig()
+        val xrayConfig = intent.getStringExtra(EXTRA_XRAY_CONFIG)
         if (config.isNullOrEmpty()) {
             setState("error", "missing config")
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -83,7 +88,7 @@ class SingBoxVpnService : VpnService() {
         worker.execute {
             if (!stopping) {
                 try {
-                    startBox(config)
+                    startBox(config, xrayConfig)
                 } catch (e: Exception) {
                     writeExtLog("startTunnel FAILED: ${e.message}")
                     setState("error", e.message)
@@ -96,12 +101,18 @@ class SingBoxVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    private fun startBox(config: String) {
+    private fun startBox(config: String, xrayConfig: String?) {
         // A reconnect must tear the previous tunnel down first, otherwise the old
         // CommandServer / network callback / tun fd leak and the command socket is hijacked.
-        if (commandServer != null) teardownBox()
+        if (commandServer != null || xray != null) teardownBox()
 
         setState("connecting")
+        xrayActive = xrayConfig != null
+        if (xrayConfig != null) {
+            xray = XraySidecar(this, "tunnel")
+            xray!!.start(xrayConfig)
+            writeExtLog("Xray SOCKS ready")
+        }
         File(filesDir, "work").mkdirs()
 
         val setup = SetupOptions()
@@ -140,6 +151,9 @@ class SingBoxVpnService : VpnService() {
         platform = null
         try { tunFd?.close() } catch (_: Exception) {}
         tunFd = null
+        xray?.stop()
+        xray = null
+        xrayActive = false
     }
 
     fun stopTunnel() {

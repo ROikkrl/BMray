@@ -64,6 +64,7 @@ android {
             java.srcDirs("src/main/kotlin")
             // Per-ABI libbox.so extracted from the aar.
             jniLibs.srcDir("$libboxExtractDir/jni")
+            jniLibs.srcDir("src/main/jniLibs")
         }
     }
 

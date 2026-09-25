@@ -9,6 +9,7 @@ test -f "$BMRAY_KEYSTORE_FILE" || { echo "Keystore не найден: $BMRAY_KEY
 if [[ ! -f packages/vpn_plugin/android/libs/libbox.aar ]]; then
   bash scripts/build_libbox_android.sh
 fi
+bash scripts/prepare_xray_android.sh
 flutter pub get
 flutter build apk --release --no-pub
 flutter build appbundle --release --no-pub

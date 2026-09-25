@@ -43,6 +43,7 @@ class FlutterSingboxVpnPlugin :
     private val probeSetupLock = Any()
     private var eventSink: EventChannel.EventSink? = null
     private var pendingConfig: String? = null
+    private var pendingXrayConfig: String? = null
     private val vpnRequestCode = 0x0F1E
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -105,6 +106,7 @@ class FlutterSingboxVpnPlugin :
         when (call.method) {
             "start" -> {
                 pendingConfig = call.argument<String>("config")
+                pendingXrayConfig = call.argument<String>("xrayConfig")
                 startVpnFlow()
                 result.success(null)
             }
@@ -123,11 +125,20 @@ class FlutterSingboxVpnPlugin :
             "clearLogs" -> { clearLogs(); result.success(null) }
             "probeProxyGet" -> {
                 val cfg = call.argument<String>("config") ?: ""
+                val xrayConfig = call.argument<String>("xrayConfig")
                 probes.execute {
                     var bridge: BoxPlatformInterface? = null
+                    var sidecar: XraySidecar? = null
                     try {
                         val active = SingBoxVpnService.current?.takeIf {
                             SingBoxVpnService.state == "connected"
+                        }
+                        if (xrayConfig != null && active != null && !active.xrayActive) {
+                            throw IllegalStateException("Отключите текущий VPN для проверки XHTTP")
+                        }
+                        if (xrayConfig != null) {
+                            sidecar = XraySidecar(context, "probe-${Thread.currentThread().id}")
+                            sidecar.start(xrayConfig)
                         }
                         if (active == null) {
                             synchronized(probeSetupLock) {
@@ -157,11 +168,13 @@ class FlutterSingboxVpnPlugin :
                             "dns" in detail || "lookup" in detail -> "Ошибка DNS"
                             "connection refused" in detail -> "Сервер отклонил соединение"
                             "invalid" in detail || "decode config" in detail -> "Ошибка конфигурации"
+                            "отключите текущий vpn" in detail -> "Отключите текущий VPN для проверки XHTTP"
                             else -> "Нет ответа через прокси"
                         }
                         mainHandler.post { result.success(mapOf("reason" to reason)) }
                     } finally {
                         bridge?.closeMonitor()
+                        sidecar?.stop()
                     }
                 }
             }
@@ -210,17 +223,20 @@ class FlutterSingboxVpnPlugin :
                 emit("error", "Для запроса VPN требуется открыть приложение")
             }
         } else {
-            launchService(prepared)
+            launchService(prepared, pendingXrayConfig)
             pendingConfig = null
+            pendingXrayConfig = null
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         if (requestCode != vpnRequestCode) return false
         val cfg = pendingConfig
+        val xrayCfg = pendingXrayConfig
         pendingConfig = null
+        pendingXrayConfig = null
         if (resultCode == Activity.RESULT_OK && cfg != null) {
-            launchService(cfg)
+            launchService(cfg, xrayCfg)
         } else {
             try { File(context.filesDir, "config.json").delete() } catch (_: Exception) {}
             emit("disconnected", "Разрешение VPN отклонено")
@@ -228,10 +244,11 @@ class FlutterSingboxVpnPlugin :
         return true
     }
 
-    private fun launchService(config: String) {
+    private fun launchService(config: String, xrayConfig: String?) {
         val intent = Intent(context, SingBoxVpnService::class.java).apply {
             action = SingBoxVpnService.ACTION_START
             putExtra(SingBoxVpnService.EXTRA_CONFIG, config)
+            if (xrayConfig != null) putExtra(SingBoxVpnService.EXTRA_XRAY_CONFIG, xrayConfig)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent)
@@ -270,6 +287,7 @@ class FlutterSingboxVpnPlugin :
         tail(File(boxTemp, "ext.log"), 16 * 1024, "extension")
         tail(File(boxTemp, "stderr.log"), 16 * 1024, "stderr")
         tail(File(context.filesDir, "box.log"), 48 * 1024, "sing-box")
+        tail(File(context.cacheDir, "tunnel-xray.log"), 24 * 1024, "Xray")
         return sb.toString()
     }
 
@@ -278,5 +296,6 @@ class FlutterSingboxVpnPlugin :
             try { File(context.cacheDir, f).writeText("") } catch (_: Exception) {}
         }
         try { File(context.filesDir, "box.log").writeText("") } catch (_: Exception) {}
+        try { File(context.cacheDir, "tunnel-xray.log").writeText("") } catch (_: Exception) {}
     }
 }

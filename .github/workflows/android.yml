@@ -53,6 +53,7 @@ jobs:
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/generic.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xray.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xray-grpc.json
+          /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xhttp-bridge.json
       - name: Prepare pinned sing-box source
         run: bash scripts/prepare_core.sh
       - uses: actions/setup-go@v5
@@ -61,6 +62,8 @@ jobs:
           cache-dependency-path: build/sing-box/go.sum
       - name: Test REALITY and HTTPS against Xray 26.9.9
         run: bash scripts/test_reality.sh
+      - name: Validate XHTTP Xray config
+        run: build/reality-test/xray run -test -config build/config-check/xhttp-xray.json
       - name: Test proxy GET through sing-box outbound
         run: (cd build/sing-box && go test -tags with_utls -run TestBMrayProbeProxyGET ./experimental/libbox)
       - uses: actions/cache@v4

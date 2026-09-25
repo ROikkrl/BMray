@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
+import 'xray_bridge.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -200,17 +201,23 @@ class _HomePageState extends State<HomePage> {
       if (node['_unsupported_reason'] != null) {
         throw FormatException(node['_unsupported_reason'].toString());
       }
-      final config = buildSingboxConfig(
-        node,
-        options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid),
-      );
+      final bridge = usesXray(node) && Platform.isAndroid
+          ? buildXrayBridge(node,
+              options: const SingboxConfigOptions(usePlatformDns: true))
+          : null;
+      if (usesXray(node) && bridge == null) {
+        throw const FormatException('XHTTP доступен в Android версии приложения.');
+      }
+      final config = bridge?.singbox ?? buildSingboxConfig(node,
+          options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
       if (item.directRules.isNotEmpty) {
         (config['route']['rules'] as List).addAll(item.directRules);
       }
       final configJson = jsonEncode(config);
       final validationError = await _vpn.validateConfig(configJson);
       if (validationError != null) throw FormatException(validationError);
-      await _vpn.start(configJson, name: 'BMray');
+      await _vpn.start(configJson, name: 'BMray',
+          xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
     });
   }
 
@@ -259,12 +266,17 @@ class _HomePageState extends State<HomePage> {
         if (node['_unsupported_reason'] != null) {
           return (delay: null, reason: node['_unsupported_reason'].toString());
         }
-        final config = buildSingboxConfig(node, options: SingboxConfigOptions(
-          usePlatformDns: Platform.isAndroid,
-        ));
+        if (usesXray(node) && !Platform.isAndroid) {
+          return (delay: null, reason: 'XHTTP доступен только на Android');
+        }
+        final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
+            options: const SingboxConfigOptions(usePlatformDns: true)) : null;
+        final config = bridge?.singbox ?? buildSingboxConfig(node,
+            options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
         config['inbounds'] = <Object>[];
         try {
-          final result = await _vpn.proxyGetDelay(jsonEncode(config));
+          final result = await _vpn.proxyGetDelay(jsonEncode(config),
+              xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
           return (delay: result.delay, reason: result.reason);
         } catch (_) {
           return (delay: null, reason: 'Ошибка проверки прокси');
