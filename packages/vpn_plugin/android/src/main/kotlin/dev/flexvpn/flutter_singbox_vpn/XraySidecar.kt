@@ -25,8 +25,12 @@ internal class XraySidecar(private val context: Context, private val prefix: Str
         val builder = ProcessBuilder(binary.absolutePath, "run", "-config", configFile.absolutePath)
             .directory(context.filesDir)
             .redirectErrorStream(true)
-            .redirectOutput(ProcessBuilder.Redirect.to(logFile))
         process = builder.start()
+        val child = process!!
+        Thread {
+            try { child.inputStream.use { input -> logFile.outputStream().use { input.copyTo(it) } } }
+            catch (_: Exception) { }
+        }.apply { isDaemon = true; start() }
         for (attempt in 0 until 60) {
             if (!running()) throw IllegalStateException("Xray stopped: ${logFile.takeLast(600)}")
             try {
@@ -42,7 +46,6 @@ internal class XraySidecar(private val context: Context, private val prefix: Str
 
     fun stop() {
         process?.destroy()
-        if (running()) process?.destroyForcibly()
         process = null
         configFile.delete()
     }
