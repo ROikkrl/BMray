@@ -96,4 +96,10 @@ void main() {
     expect(rules.indexWhere((r) => r['ip_is_private'] == true), greaterThan(0));
     expect(config['route']['final'], 'proxy');
   });
+
+  test('XHTTP links are not silently interpreted as plain TCP', () {
+    final link = realityLink.replaceFirst('type=tcp', 'type=xhttp');
+    expect(parseShareLink(link), isNull);
+    expect(parseSubscription(link), isEmpty);
+  });
 }

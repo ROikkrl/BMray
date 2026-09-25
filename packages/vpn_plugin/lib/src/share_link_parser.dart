@@ -259,6 +259,10 @@ Map<String, dynamic>? _buildTransport({
   }
 }
 
+bool _supportedNetwork(String? network) => const {
+  '', 'tcp', 'ws', 'websocket', 'grpc', 'http', 'h2', 'httpupgrade', 'quic',
+}.contains((network ?? 'tcp').toLowerCase());
+
 // ---------------------------------------------------------------------------
 // vmess:// (v2rayN base64 JSON)
 // ---------------------------------------------------------------------------
@@ -292,6 +296,7 @@ Map<String, dynamic>? _parseVmess(String link) {
   if (server.isEmpty || port == null || uuid.isEmpty) return null;
 
   final net = (j['net'] ?? 'tcp').toString();
+  if (!_supportedNetwork(net)) return null;
   final path = (j['path'] ?? '').toString();
   final host = (j['host'] ?? '').toString();
   // v2rayN security/cipher field is "scy" (newer) or "security"; "type" is the
@@ -455,6 +460,7 @@ Map<String, dynamic>? _parseVless(String link) {
   if (flow != null && flow.isNotEmpty) out['flow'] = flow;
 
   final network = p.params['type'] ?? 'tcp';
+  if (!_supportedNetwork(network)) return null;
   final transport = _buildTransport(
     network: network,
     path: p.params['path'],
@@ -521,6 +527,7 @@ Map<String, dynamic>? _parseTrojan(String link) {
   };
 
   final network = p.params['type'] ?? 'tcp';
+  if (!_supportedNetwork(network)) return null;
   final transport = _buildTransport(
     network: network,
     path: p.params['path'],

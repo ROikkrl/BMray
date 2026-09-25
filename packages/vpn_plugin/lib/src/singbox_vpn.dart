@@ -5,6 +5,12 @@ import 'package:flutter/services.dart';
 import 'singbox_config.dart';
 import 'vpn_status.dart';
 
+class ProxyProbeResult {
+  const ProxyProbeResult({this.delay, this.reason});
+  final int? delay;
+  final String? reason;
+}
+
 /// Controls the sing-box VPN tunnel running in the platform's native VPN engine
 /// (iOS NetworkExtension / Android VpnService).
 class SingboxVpn {
@@ -92,9 +98,13 @@ class SingboxVpn {
   }
 
   /// Real HTTP GET through the selected sing-box outbound; null on timeout/error.
-  Future<int?> proxyGetDelay(String configJson) => _methods.invokeMethod<int>(
-    'probeProxyGet', {'config': configJson},
-  );
+  Future<ProxyProbeResult> proxyGetDelay(String configJson) async {
+    final result = await _methods.invokeMapMethod<String, dynamic>(
+      'probeProxyGet', {'config': configJson},
+    );
+    return ProxyProbeResult(delay: result?['delay'] as int?,
+        reason: result?['reason'] as String?);
+  }
 
   /// Direct TCP connect on the underlying Android network; null on error.
   Future<int?> tcpDelay(String host, int port) => _methods.invokeMethod<int>(

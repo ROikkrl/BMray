@@ -113,7 +113,7 @@ func TestBMrayRealityXray(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	for _, fp := range []string{"firefox", "chrome"} {
+	for _, fp := range []string{"firefox", "chrome", "qq"} {
 		for _, invalid := range []string{"valid", "key", "short_id"} {
 			if legacy && invalid != "valid" {
 				continue

@@ -60,6 +60,7 @@ class _HomePageState extends State<HomePage> {
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
   final Map<String, int?> _latencies = {};
+  final Map<String, String> _pingErrors = {};
   String? _error;
 
   Subscription? get _selected {
@@ -127,7 +128,7 @@ class _HomePageState extends State<HomePage> {
               enableSuggestions: false,
               decoration: const InputDecoration(
                 labelText: 'Подписка или ссылка сервера',
-                hintText: 'https://… или vless://…',
+                hintText: 'https://…, vless://… или Xray JSON',
               ),
             ),
           ],
@@ -190,13 +191,17 @@ class _HomePageState extends State<HomePage> {
     if (item == null || item.nodes.isEmpty || _status.state.isBusy) return;
     await _perform(() async {
       final node = item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
-      final config = buildSingboxConfigJson(
+      final config = buildSingboxConfig(
         node,
         options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid),
       );
-      final validationError = await _vpn.validateConfig(config);
+      if (item.directRules.isNotEmpty) {
+        (config['route']['rules'] as List).addAll(item.directRules);
+      }
+      final configJson = jsonEncode(config);
+      final validationError = await _vpn.validateConfig(configJson);
       if (validationError != null) throw FormatException(validationError);
-      await _vpn.start(config, name: 'BMray');
+      await _vpn.start(configJson, name: 'BMray');
     });
   }
 
@@ -207,6 +212,7 @@ class _HomePageState extends State<HomePage> {
       await _store.refresh(item);
       _nodeIndex = _nodeIndex.clamp(0, item.nodes.length - 1);
       _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
+      _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
       await _store.save(_subscriptions);
       if (mounted) setState(() {});
     });
@@ -215,28 +221,30 @@ class _HomePageState extends State<HomePage> {
   String _delayKey(Subscription item, int index) =>
       '${item.id}:$index:${_pingMethod.name}';
 
-  Future<int?> _probe(Map<String, dynamic> node) async {
+  Future<({int? delay, String? reason})> _probe(Map<String, dynamic> node) async {
     final host = node['server']?.toString() ?? '';
     final port = node['server_port'];
     switch (_pingMethod) {
       case PingMethod.tcp:
-        if (port is! int || host.isEmpty) return null;
-        return _vpn.tcpDelay(host, port);
+        if (port is! int || host.isEmpty) return (delay: null, reason: 'Некорректный адрес');
+        final delay = await _vpn.tcpDelay(host, port);
+        return (delay: delay, reason: delay == null ? 'TCP: нет ответа' : null);
       case PingMethod.icmp:
         if (!Platform.isAndroid ||
             !RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9.:-]{0,252}$').hasMatch(host)) {
-          return null;
+          return (delay: null, reason: 'Некорректный адрес');
         }
         try {
           final process = await Process.run('ping', [
             '-c', '1', '-W', '2', host,
           ]).timeout(const Duration(seconds: 4));
-          if (process.exitCode != 0) return null;
+          if (process.exitCode != 0) return (delay: null, reason: 'ICMP: нет ответа');
           final match = RegExp(r'time[=<]([\d.]+)')
               .firstMatch(process.stdout.toString());
-          return match == null ? null : double.parse(match.group(1)!).ceil();
+          return (delay: match == null ? null : double.parse(match.group(1)!).ceil(),
+              reason: match == null ? 'ICMP: нет ответа' : null);
         } catch (_) {
-          return null;
+          return (delay: null, reason: 'ICMP: проверка недоступна');
         }
       case PingMethod.proxyGet:
         final config = buildSingboxConfig(node, options: SingboxConfigOptions(
@@ -244,9 +252,10 @@ class _HomePageState extends State<HomePage> {
         ));
         config['inbounds'] = <Object>[];
         try {
-          return await _vpn.proxyGetDelay(jsonEncode(config));
+          final result = await _vpn.proxyGetDelay(jsonEncode(config));
+          return (delay: result.delay, reason: result.reason);
         } catch (_) {
-          return null;
+          return (delay: null, reason: 'Ошибка проверки прокси');
         }
     }
   }
@@ -262,6 +271,7 @@ class _HomePageState extends State<HomePage> {
       _error = null;
       for (final index in indices) {
         _latencies.remove(_delayKey(item, index));
+        _pingErrors.remove(_delayKey(item, index));
       }
     });
     final method = _pingMethod;
@@ -272,7 +282,10 @@ class _HomePageState extends State<HomePage> {
         if (!mounted || method != _pingMethod) break;
         setState(() {
           for (var j = 0; j < batch.length; j++) {
-            _latencies[_delayKey(item, batch[j])] = values[j];
+            _latencies[_delayKey(item, batch[j])] = values[j].delay;
+            if (values[j].reason != null) {
+              _pingErrors[_delayKey(item, batch[j])] = values[j].reason!;
+            }
           }
         });
       }
@@ -465,6 +478,15 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
             if (item != null) ...[
+              if (item.notice != null) Padding(
+                padding: const EdgeInsets.only(top: 14),
+                child: Card(child: Padding(padding: const EdgeInsets.all(14),
+                    child: Row(children: [
+                      const Icon(Icons.info_outline_rounded, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(item.notice!, style: const TextStyle(fontSize: 12))),
+                    ]))),
+              ),
               const SizedBox(height: 18),
               Row(children: [
                 const Expanded(child: Text('Серверы', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
@@ -526,6 +548,8 @@ class _HomePageState extends State<HomePage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
               Text(node['type']?.toString().toUpperCase() ?? 'ПРОКСИ',
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
+              if (_pingErrors[key] != null) Text(_pingErrors[key]!,
+                style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
             ])),
             if (measured) Text(delay == null ? '—' : '$delay мс',
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),

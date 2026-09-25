@@ -51,6 +51,7 @@ jobs:
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/android.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/generic.json
+          /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xray.json
       - name: Prepare pinned sing-box source
         run: bash scripts/prepare_core.sh
       - uses: actions/setup-go@v5

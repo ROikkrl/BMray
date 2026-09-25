@@ -8,10 +8,10 @@ import (
 )
 
 // Xray >= 26.9.8 requires ML-KEM before X25519. Preserve Chrome's hybrid
-// key shares and modernize the pinned Firefox preset's key exchange only.
+// key shares and modernize Firefox and QQ presets' key exchange.
 func bmrayRealityHello(conn net.Conn, config *utls.Config, id utls.ClientHelloID) (*utls.UConn, error) {
 	c := utls.UClient(conn, config, id)
-	if id.Client == utls.HelloFirefox_Auto.Client {
+	if id.Client == utls.HelloFirefox_Auto.Client || id.Client == utls.HelloQQ_Auto.Client {
 		spec, err := utls.UTLSIdToSpec(id)
 		if err != nil {
 			return nil, err

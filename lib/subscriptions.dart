@@ -6,6 +6,7 @@ import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'clash_subscription.dart';
 import 'subscription_title.dart';
+import 'xray_subscription.dart';
 
 class Subscription {
   Subscription({
@@ -14,6 +15,8 @@ class Subscription {
     required this.url,
     required this.nodes,
     this.customName = false,
+    this.notice,
+    this.directRules = const [],
   });
 
   final String id;
@@ -21,19 +24,29 @@ class Subscription {
   String url;
   List<Map<String, dynamic>> nodes;
   bool customName;
+  String? notice;
+  List<Map<String, dynamic>> directRules;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
-  factory Subscription.fromJson(Map<String, dynamic> value) => Subscription(
+  factory Subscription.fromJson(Map<String, dynamic> value) {
+    final url = value['url'] as String;
+    final storedName = value['name'] as String;
+    final customName = value['customName'] as bool? ??
+        (storedName != Uri.tryParse(url)?.host);
+    return Subscription(
     id: value['id'] as String,
-    name: value['name'] as String,
-    url: value['url'] as String,
+    name: customName ? storedName : (subscriptionTitle(storedName, '') ?? storedName),
+    url: url,
     nodes: (value['nodes'] as List)
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList(),
-    customName: value['customName'] as bool? ??
-        (value['name'] != Uri.tryParse(value['url'] as String)?.host),
-  );
+    customName: customName,
+    notice: value['notice'] as String?,
+    directRules: (value['directRules'] as List? ?? [])
+        .map((rule) => Map<String, dynamic>.from(rule as Map)).toList(),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -41,6 +54,8 @@ class Subscription {
     'url': url,
     'nodes': nodes,
     'customName': customName,
+    'notice': notice,
+    'directRules': directRules,
   };
 }
 
@@ -63,6 +78,21 @@ class SubscriptionStore {
 
   Future<Subscription> import(String name, String url) async {
     final input = url.trim();
+    if (input.startsWith('{')) {
+      final template = parseXrayTemplate(input);
+      if (template == null) {
+        throw const FormatException('Не удалось разобрать Xray JSON.');
+      }
+      if (template.nodes.isEmpty) {
+        throw const FormatException('Этот Xray JSON содержит только неподдерживаемые транспорты (например, XHTTP).');
+      }
+      return Subscription(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        name: name.trim().isEmpty ? template.name ?? 'Xray JSON' : name.trim(),
+        url: input, nodes: template.nodes, directRules: template.directRules,
+        notice: template.notice, customName: name.trim().isNotEmpty,
+      );
+    }
     final normalized = Uri.tryParse(input);
     const shareSchemes = {
       'vless',
@@ -98,8 +128,8 @@ class SubscriptionStore {
       );
     }
     final downloaded = await _download(normalized);
-    final nodes = _parse(downloaded.body);
-    if (nodes.isEmpty) {
+    final parsed = _parse(downloaded.body);
+    if (parsed.nodes.isEmpty) {
       throw const FormatException(
         'У подписки нет распознанных серверов. Попробуйте формат sing-box, V2Ray или Clash в боте.',
       );
@@ -107,10 +137,12 @@ class SubscriptionStore {
     return Subscription(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: name.trim().isEmpty
-          ? (subscriptionTitle(downloaded.title, downloaded.body) ?? normalized.host)
+          ? (subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? normalized.host)
           : name.trim(),
       url: normalized.toString(),
-      nodes: nodes,
+      nodes: parsed.nodes,
+      directRules: parsed.directRules,
+      notice: parsed.notice,
       customName: name.trim().isNotEmpty,
     );
   }
@@ -122,24 +154,40 @@ class SubscriptionStore {
       );
     }
     final downloaded = await _download(Uri.parse(item.url));
-    final nodes = _parse(downloaded.body);
-    if (nodes.isEmpty)
+    final parsed = _parse(downloaded.body);
+    if (parsed.nodes.isEmpty)
       throw const FormatException(
         'В обновлённой подписке нет распознанных серверов.',
       );
-    item.nodes = nodes;
+    item.nodes = parsed.nodes;
+    item.notice = parsed.notice;
+    item.directRules = parsed.directRules;
     if (!item.customName) {
-      item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? item.name;
+      item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
     }
   }
 
-  List<Map<String, dynamic>> _parse(String content) {
+  ({List<Map<String, dynamic>> nodes, String? name, String? notice,
+      List<Map<String, dynamic>> directRules}) _parse(String content) {
+    final xray = parseXrayTemplate(content);
+    if (xray != null) {
+      return (nodes: xray.nodes, name: xray.name, notice: xray.notice,
+          directRules: xray.directRules);
+    }
     final standard = parseSubscription(content);
-    if (standard.isNotEmpty) return standard;
+    if (standard.isNotEmpty) {
+      final hasXhttp = RegExp(r'(?:type|net)=xhttp(?:&|#|$)', caseSensitive: false)
+          .hasMatch(content);
+      return (nodes: standard, name: null,
+          notice: hasXhttp ? 'Ссылки XHTTP пропущены: sing-box не поддерживает этот транспорт.' : null,
+          directRules: <Map<String, dynamic>>[]);
+    }
     try {
-      return parseClashSubscription(content);
+      return (nodes: parseClashSubscription(content), name: null, notice: null,
+          directRules: <Map<String, dynamic>>[]);
     } catch (_) {
-      return [];
+      return (nodes: <Map<String, dynamic>>[], name: null, notice: null,
+          directRules: <Map<String, dynamic>>[]);
     }
   }
 

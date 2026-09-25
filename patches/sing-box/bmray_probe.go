@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	box "github.com/sagernet/sing-box"
@@ -13,7 +14,7 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
-// ProbeProxyGET starts an isolated core without a TUN and checks HTTPS with GET
+// ProbeProxyGET starts an isolated core without a TUN and checks URLs with GET
 // through the requested outbound. A positive value is the elapsed time in ms.
 // No URL, host, credentials, or response body are returned to the UI.
 func ProbeProxyGET(configContent string, link string, platform PlatformInterface) (int32, error) {
@@ -29,7 +30,7 @@ func ProbeProxyGET(configContent string, link string, platform PlatformInterface
 	if len(options.Inbounds) != 0 {
 		return 0, &probeConfigError{}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 9*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	instance, err := box.New(box.Options{Context: ctx, Options: options})
 	if err != nil {
@@ -43,9 +44,28 @@ func ProbeProxyGET(configContent string, link string, platform PlatformInterface
 	if !found {
 		return 0, &probeConfigError{}
 	}
-	return probeGET(ctx, link, func(ctx context.Context, network string, address string) (net.Conn, error) {
+	dial := func(ctx context.Context, network string, address string) (net.Conn, error) {
 		return outbound.DialContext(ctx, "tcp", M.ParseSocksaddr(address))
-	})
+	}
+	return probeTargets(ctx, link, dial)
+}
+
+func probeTargets(ctx context.Context, link string, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
+	var lastErr error
+	for _, target := range strings.Split(link, "\n") {
+		if target == "" {
+			continue
+		}
+		delay, err := probeGET(ctx, target, dial)
+		if err == nil {
+			return delay, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = &probeConfigError{}
+	}
+	return 0, lastErr
 }
 
 func probeGET(ctx context.Context, link string, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
@@ -55,7 +75,7 @@ func probeGET(ctx context.Context, link string, dial func(context.Context, strin
 		DialContext:       dial,
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 8 * time.Second,
+	client := &http.Client{Transport: transport, Timeout: 4 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)

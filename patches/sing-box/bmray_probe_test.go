@@ -23,3 +23,24 @@ func TestBMrayProbeProxyGET(t *testing.T) {
 		t.Fatalf("GET via outbound: delay=%d err=%v method=%q", delay, err, method)
 	}
 }
+
+func TestBMrayProbeFallsBackWhenFirstTargetFails(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer good.Close()
+	delay, err := probeTargets(context.Background(), bad.URL+"\n"+good.URL,
+		func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		})
+	if err != nil || delay < 1 {
+		t.Fatalf("fallback: delay=%d err=%v", delay, err)
+	}
+}

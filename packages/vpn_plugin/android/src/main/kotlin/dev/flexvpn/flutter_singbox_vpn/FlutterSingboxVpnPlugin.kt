@@ -140,10 +140,26 @@ class FlutterSingboxVpnPlugin :
                             }
                         }
                         bridge = if (active != null) BoxPlatformInterface(active) else BoxPlatformInterface(context)
-                        val delay = Libbox.probeProxyGET(cfg, "https://www.gstatic.com/generate_204", bridge)
-                        mainHandler.post { result.success(delay) }
-                    } catch (_: Exception) {
-                        mainHandler.post { result.success(null) }
+                        val delay = Libbox.probeProxyGET(
+                            cfg,
+                            "https://www.gstatic.com/generate_204\n" +
+                                "https://cp.cloudflare.com/generate_204\n" +
+                                "https://max.ru/",
+                            bridge,
+                        )
+                        mainHandler.post { result.success(mapOf("delay" to delay)) }
+                    } catch (e: Exception) {
+                        val detail = e.message?.lowercase() ?: ""
+                        val reason = when {
+                            "reality verification failed" in detail -> "Ошибка проверки REALITY"
+                            "timeout" in detail || "deadline exceeded" in detail -> "Тайм-аут"
+                            "unknown utls" in detail || "fingerprint" in detail -> "Неподдерживаемый fingerprint"
+                            "dns" in detail || "lookup" in detail -> "Ошибка DNS"
+                            "connection refused" in detail -> "Сервер отклонил соединение"
+                            "invalid" in detail || "decode config" in detail -> "Ошибка конфигурации"
+                            else -> "Нет ответа через прокси"
+                        }
+                        mainHandler.post { result.success(mapOf("reason" to reason)) }
                     } finally {
                         bridge?.closeMonitor()
                     }
