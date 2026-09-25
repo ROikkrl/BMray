@@ -90,4 +90,14 @@ class SingboxVpn {
       // no-op
     }
   }
+
+  /// Real HTTP GET through the selected sing-box outbound; null on timeout/error.
+  Future<int?> proxyGetDelay(String configJson) => _methods.invokeMethod<int>(
+    'probeProxyGet', {'config': configJson},
+  );
+
+  /// Direct TCP connect on the underlying Android network; null on error.
+  Future<int?> tcpDelay(String host, int port) => _methods.invokeMethod<int>(
+    'probeTcp', {'host': host, 'port': port},
+  );
 }

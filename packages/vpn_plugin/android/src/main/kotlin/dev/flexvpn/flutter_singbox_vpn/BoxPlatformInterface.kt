@@ -1,6 +1,7 @@
 package dev.flexvpn.flutter_singbox_vpn
 
 import android.net.ConnectivityManager
+import android.content.Context
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -28,11 +29,13 @@ import java.util.concurrent.TimeUnit
 /// Implements sing-box's libbox callbacks for Android: builds the VpnService TUN,
 /// protects proxy sockets (so they bypass the tunnel), and reports the default
 /// network interface. Also serves as the CommandServerHandler.
-class BoxPlatformInterface(private val service: SingBoxVpnService) :
+class BoxPlatformInterface(private val context: Context, private val service: SingBoxVpnService? = null) :
     PlatformInterface, CommandServerHandler {
 
+    constructor(service: SingBoxVpnService) : this(service, service)
+
     private val connectivity: ConnectivityManager? =
-        service.getSystemService(ConnectivityManager::class.java)
+        context.getSystemService(ConnectivityManager::class.java)
     private var monitorCallback: ConnectivityManager.NetworkCallback? = null
     private var monitorThread: HandlerThread? = null
     @Volatile private var underlyingNetwork: Network? = null
@@ -41,7 +44,8 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
     // MARK: TUN
 
     override fun openTun(options: TunOptions): Int {
-        val builder = service.Builder()
+        val vpnService = service ?: throw IllegalStateException("probe cannot open a VPN tunnel")
+        val builder = vpnService.Builder()
         builder.setMtu(options.getMTU())
         builder.setSession("BMray")
 
@@ -87,7 +91,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         builder.setBlocking(false)
         val pfd = builder.establish()
             ?: throw IllegalStateException("VpnService not prepared / establish() failed")
-        service.tunFd = pfd
+        vpnService.tunFd = pfd
         return pfd.fd
     }
 
@@ -96,7 +100,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
     override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
 
     override fun autoDetectInterfaceControl(fd: Int) {
-        if (!service.protect(fd)) {
+        if (service != null && !service.protect(fd)) {
             throw IllegalStateException("protect($fd) failed")
         }
         val network = underlyingNetwork
@@ -112,7 +116,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         val latch = CountDownLatch(1)
         fun update(network: Network, properties: LinkProperties? = null) {
             underlyingNetwork = network
-            service.setUnderlyingNetworks(arrayOf(network))
+            service?.setUnderlyingNetworks(arrayOf(network))
             if (emit(network, listener, properties)) latch.countDown()
         }
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -132,7 +136,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
                 // Losing an old network after a handover must not clear the new one.
                 if (network == underlyingNetwork) {
                     underlyingNetwork = null
-                    service.setUnderlyingNetworks(null)
+                    service?.setUnderlyingNetworks(null)
                     listener.updateDefaultInterface("", -1, false, false)
                 }
             }
@@ -164,7 +168,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         val cm = connectivity ?: return false
         val name = (properties ?: cm.getLinkProperties(network))?.interfaceName
         if (name == null) {
-            service.writeExtLog("monitor: underlying network has no interfaceName yet")
+            service?.writeExtLog("monitor: underlying network has no interfaceName yet")
             return false
         }
         val caps = cm.getNetworkCapabilities(network)
@@ -172,7 +176,7 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
         if (index <= 0) return false
         val expensive = caps != null &&
             !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        service.writeExtLog("monitor: default underlying iface=$name index=$index expensive=$expensive")
+        service?.writeExtLog("monitor: default underlying iface=$name index=$index expensive=$expensive")
         listener.updateDefaultInterface(name, index, expensive, false)
         return true
     }
@@ -229,9 +233,9 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
                 }
             }
         } catch (e: Exception) {
-            service.writeExtLog("getInterfaces error: ${e.message}")
+            service?.writeExtLog("getInterfaces error: ${e.message}")
         }
-        service.writeExtLog("getInterfaces -> " + list.joinToString(", ") { "${it.name}#${it.index}" })
+        service?.writeExtLog("getInterfaces -> " + list.joinToString(", ") { "${it.name}#${it.index}" })
         return ArrayInterfaceIterator(list)
     }
 
@@ -276,9 +280,9 @@ class BoxPlatformInterface(private val service: SingBoxVpnService) :
 
     // MARK: CommandServerHandler
 
-    override fun serviceStop() { service.stopTunnel() }
+    override fun serviceStop() { service?.stopTunnel() }
     override fun serviceReload() {}
     override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus()
     override fun setSystemProxyEnabled(enabled: Boolean) {}
-    override fun writeDebugMessage(message: String?) { message?.let { service.writeExtLog(it) } }
+    override fun writeDebugMessage(message: String?) { message?.let { service?.writeExtLog(it) } }
 }

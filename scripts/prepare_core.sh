@@ -13,3 +13,5 @@ if ! git -C "$core_dir" apply --reverse --check "$patch_file" 2>/dev/null; then
   git -C "$core_dir" apply "$patch_file"
 fi
 cp "$repo_dir"/patches/sing-box/bmray_reality_*.go "$core_dir/common/tls/"
+cp "$repo_dir"/patches/sing-box/bmray_probe.go "$core_dir/experimental/libbox/"
+cp "$repo_dir"/patches/sing-box/bmray_probe_test.go "$core_dir/experimental/libbox/"

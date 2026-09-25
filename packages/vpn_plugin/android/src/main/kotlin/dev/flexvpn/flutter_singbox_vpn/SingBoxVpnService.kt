@@ -19,6 +19,8 @@ import java.util.concurrent.Executors
 class SingBoxVpnService : VpnService() {
 
     companion object {
+        @Volatile var current: SingBoxVpnService? = null
+            private set
         const val ACTION_START = "com.bolvankamax.bmray.action.START"
         const val ACTION_STOP = "com.bolvankamax.bmray.action.STOP"
         const val EXTRA_CONFIG = "config"
@@ -47,6 +49,11 @@ class SingBoxVpnService : VpnService() {
     private var stopping = false
 
     private val boxTempDir: File get() = File(cacheDir, "box").apply { mkdirs() }
+
+    override fun onCreate() {
+        super.onCreate()
+        current = this
+    }
 
     private fun setState(value: String, message: String? = null) {
         state = value
@@ -153,6 +160,7 @@ class SingBoxVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        current = null
         stopping = true
         worker.execute {
             teardownBox()

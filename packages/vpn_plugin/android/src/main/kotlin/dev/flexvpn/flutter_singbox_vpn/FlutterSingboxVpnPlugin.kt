@@ -7,6 +7,8 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -17,6 +19,9 @@ import io.flutter.plugin.common.PluginRegistry
 import io.nekohasekai.libbox.Libbox
 import org.json.JSONObject
 import java.io.File
+import java.net.InetSocketAddress
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Bridges Flutter ⇄ the sing-box [SingBoxVpnService]. */
 class FlutterSingboxVpnPlugin :
@@ -34,6 +39,8 @@ class FlutterSingboxVpnPlugin :
     private var activityBinding: ActivityPluginBinding? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val probes = Executors.newFixedThreadPool(3)
+    private val probeSetupLock = Any()
     private var eventSink: EventChannel.EventSink? = null
     private var pendingConfig: String? = null
     private val vpnRequestCode = 0x0F1E
@@ -47,6 +54,7 @@ class FlutterSingboxVpnPlugin :
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        probes.shutdownNow()
         methods.setMethodCallHandler(null)
         events.setStreamHandler(null)
         SingBoxVpnService.statusListener = null
@@ -113,6 +121,60 @@ class FlutterSingboxVpnPlugin :
             }
             "readLogs" -> result.success(readLogs())
             "clearLogs" -> { clearLogs(); result.success(null) }
+            "probeProxyGet" -> {
+                val cfg = call.argument<String>("config") ?: ""
+                probes.execute {
+                    var bridge: BoxPlatformInterface? = null
+                    try {
+                        val active = SingBoxVpnService.current?.takeIf {
+                            SingBoxVpnService.state == "connected"
+                        }
+                        if (active == null) {
+                            synchronized(probeSetupLock) {
+                                val root = context.filesDir
+                                val setup = io.nekohasekai.libbox.SetupOptions()
+                                setup.basePath = root.absolutePath
+                                setup.workingPath = File(root, "work").apply { mkdirs() }.absolutePath
+                                setup.tempPath = File(context.cacheDir, "box").apply { mkdirs() }.absolutePath
+                                Libbox.setup(setup)
+                            }
+                        }
+                        bridge = if (active != null) BoxPlatformInterface(active) else BoxPlatformInterface(context)
+                        val delay = Libbox.probeProxyGET(cfg, "https://www.gstatic.com/generate_204", bridge)
+                        mainHandler.post { result.success(delay) }
+                    } catch (_: Exception) {
+                        mainHandler.post { result.success(null) }
+                    } finally {
+                        bridge?.closeMonitor()
+                    }
+                }
+            }
+            "probeTcp" -> {
+                val host = call.argument<String>("host") ?: ""
+                val port = call.argument<Int>("port") ?: 0
+                probes.execute {
+                    var delay: Int? = null
+                    if (host.isNotBlank() && port in 1..65535) {
+                        try {
+                            val cm = context.getSystemService(ConnectivityManager::class.java)
+                            val network = cm.allNetworks.firstOrNull {
+                                val caps = cm.getNetworkCapabilities(it)
+                                caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                            }
+                            if (network != null) {
+                                val addresses = network.getAllByName(host)
+                                val start = System.nanoTime()
+                                network.socketFactory.createSocket().use { socket ->
+                                    socket.connect(InetSocketAddress(addresses.first(), port), 3000)
+                                }
+                                delay = (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).coerceAtLeast(1).toInt()
+                            }
+                        } catch (_: Exception) { }
+                    }
+                    mainHandler.post { result.success(delay) }
+                }
+            }
             else -> result.notImplemented()
         }
     }

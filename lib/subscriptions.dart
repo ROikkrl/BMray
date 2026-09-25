@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'clash_subscription.dart';
+import 'subscription_title.dart';
 
 class Subscription {
   Subscription({
@@ -12,12 +13,14 @@ class Subscription {
     required this.name,
     required this.url,
     required this.nodes,
+    this.customName = false,
   });
 
   final String id;
   String name;
   String url;
   List<Map<String, dynamic>> nodes;
+  bool customName;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
@@ -28,6 +31,8 @@ class Subscription {
     nodes: (value['nodes'] as List)
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList(),
+    customName: value['customName'] as bool? ??
+        (value['name'] != Uri.tryParse(value['url'] as String)?.host),
   );
 
   Map<String, dynamic> toJson() => {
@@ -35,6 +40,7 @@ class Subscription {
     'name': name,
     'url': url,
     'nodes': nodes,
+    'customName': customName,
   };
 }
 
@@ -91,7 +97,8 @@ class SubscriptionStore {
         'Вставьте HTTPS-подписку или ссылку сервера vless://, vmess://, trojan://, ss://, hy2://, tuic://',
       );
     }
-    final nodes = _parse(await _download(normalized));
+    final downloaded = await _download(normalized);
+    final nodes = _parse(downloaded.body);
     if (nodes.isEmpty) {
       throw const FormatException(
         'У подписки нет распознанных серверов. Попробуйте формат sing-box, V2Ray или Clash в боте.',
@@ -99,9 +106,12 @@ class SubscriptionStore {
     }
     return Subscription(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      name: name.trim().isEmpty ? normalized.host : name.trim(),
+      name: name.trim().isEmpty
+          ? (subscriptionTitle(downloaded.title, downloaded.body) ?? normalized.host)
+          : name.trim(),
       url: normalized.toString(),
       nodes: nodes,
+      customName: name.trim().isNotEmpty,
     );
   }
 
@@ -111,12 +121,16 @@ class SubscriptionStore {
         'Это отдельный сервер. Для изменения импортируйте новую ссылку.',
       );
     }
-    final nodes = _parse(await _download(Uri.parse(item.url)));
+    final downloaded = await _download(Uri.parse(item.url));
+    final nodes = _parse(downloaded.body);
     if (nodes.isEmpty)
       throw const FormatException(
         'В обновлённой подписке нет распознанных серверов.',
       );
     item.nodes = nodes;
+    if (!item.customName) {
+      item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? item.name;
+    }
   }
 
   List<Map<String, dynamic>> _parse(String content) {
@@ -129,7 +143,7 @@ class SubscriptionStore {
     }
   }
 
-  Future<String> _download(Uri initial) async {
+  Future<({String body, String? title})> _download(Uri initial) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     try {
@@ -173,7 +187,7 @@ class SubscriptionStore {
             );
           }
         }
-        return utf8.decode(bytes);
+        return (body: utf8.decode(bytes), title: response.headers.value('profile-title'));
       }
       throw const FormatException('Слишком много переадресаций подписки.');
     } finally {
