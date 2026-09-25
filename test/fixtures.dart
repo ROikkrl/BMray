@@ -12,7 +12,7 @@ const xrayFixture = '''
   "remarks":"Польша - АвтоБС",
   "routing":{
     "rules":[
-      {"type":"field","domain":["domain:example.org","full:mail.example.org","regexp:^api\\\\.example\\\\.org$","geosite:category-test"],"outboundTag":"direct"},
+      {"type":"field","domain":["domain:example.org","full:mail.example.org","regexp:^api\\\\.example\\\\.org\$","geosite:category-test"],"outboundTag":"direct"},
       {"type":"field","ip":["10.0.0.0/8","geoip:private"],"outboundTag":"direct"},
       {"type":"field","balancerTag":"auto_wifi","network":"tcp,udp"}
     ],
