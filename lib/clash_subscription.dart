@@ -2,19 +2,20 @@ import 'package:yaml/yaml.dart';
 
 /// Converts common Clash/Mihomo proxy records to sing-box outbounds.
 /// Unsupported node types are skipped; the app reports an error if none remain.
-List<Map<String, dynamic>> parseClashSubscription(String content) {
+List<Map<String, dynamic>> parseClashSubscription(String content,
+    {bool includeUnsupported = false}) {
   final root = loadYaml(content);
   if (root is! Map || root['proxies'] is! List) return [];
   final converted = <Map<String, dynamic>>[];
   for (final raw in root['proxies'] as List) {
     if (raw is! Map) continue;
-    final node = convertClashNode(raw);
+    final node = convertClashNode(raw, includeUnsupported: includeUnsupported);
     if (node != null) converted.add(node);
   }
   return converted;
 }
 
-Map<String, dynamic>? convertClashNode(Map raw) {
+Map<String, dynamic>? convertClashNode(Map raw, {bool includeUnsupported = false}) {
   final type = raw['type']?.toString().toLowerCase();
   final host = raw['server']?.toString();
   final port = int.tryParse(raw['port']?.toString() ?? '');
@@ -122,6 +123,9 @@ Map<String, dynamic>? convertClashNode(Map raw) {
       if (grpc is Map && _nonempty(grpc['grpc-service-name']))
         'service_name': grpc['grpc-service-name'].toString(),
     };
+  } else if (network == 'xhttp') {
+    if (!includeUnsupported) return null;
+    result['_unsupported_reason'] = 'XHTTP требует ядро Xray';
   } else if (network != null && network != 'tcp' && network.isNotEmpty) {
     return null;
   }

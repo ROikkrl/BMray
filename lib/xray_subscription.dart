@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-/// The subset of an Xray template which the embedded sing-box core can run.
-/// Unsupported transports are excluded instead of being silently changed.
+/// The subset of an Xray client template which the embedded core can run.
+/// Unsupported transports remain visible but cannot be selected for a tunnel.
 class XrayTemplate {
   const XrayTemplate(this.name, this.nodes, this.directRules, this.notice);
 
@@ -42,10 +42,6 @@ XrayTemplate? parseXrayTemplate(String content) {
     final settings = entry['streamSettings'];
     if (server is! Map || user is! Map || settings is! Map) continue;
     final network = (settings['network'] ?? 'tcp').toString().toLowerCase();
-    if (network != 'tcp') {
-      unsupported.add(network);
-      continue;
-    }
     final host = server['address']?.toString() ?? '';
     final port = int.tryParse('${server['port']}');
     final uuid = user['id']?.toString() ?? '';
@@ -57,6 +53,25 @@ XrayTemplate? parseXrayTemplate(String content) {
       'server_port': port,
       'uuid': uuid,
     };
+    if (network == 'xhttp') {
+      node['_unsupported_reason'] = 'XHTTP требует ядро Xray';
+      nodes.add(node);
+      unsupported.add(network);
+      continue;
+    }
+    if (network == 'grpc') {
+      final grpc = settings['grpcSettings'];
+      node['transport'] = {
+        'type': 'grpc',
+        if (grpc is Map && grpc['serviceName']?.toString().isNotEmpty == true)
+          'service_name': grpc['serviceName'].toString(),
+      };
+    } else if (network != 'tcp') {
+      node['_unsupported_reason'] = '$network требует ядро Xray';
+      nodes.add(node);
+      unsupported.add(network);
+      continue;
+    }
     final flow = user['flow']?.toString();
     if (flow != null && flow.isNotEmpty) node['flow'] = flow;
     final security = settings['security']?.toString().toLowerCase();
@@ -127,7 +142,7 @@ XrayTemplate? parseXrayTemplate(String content) {
   }
   final notices = <String>[];
   if (unsupported.isNotEmpty) {
-    notices.add('Резервные каналы (${unsupported.join(', ')}) не поддерживаются sing-box. Работают только показанные серверы.');
+    notices.add('Серверы ${unsupported.join(', ')} показаны в списке, но подключение через них требует ядро Xray.');
   }
   if (routing is Map && routing['balancers'] is List && (routing['balancers'] as List).isNotEmpty) {
     notices.add('Автоматический балансировщик Xray не перенесён; выберите доступный сервер вручную.');

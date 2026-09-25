@@ -70,6 +70,11 @@ class _HomePageState extends State<HomePage> {
     return _subscriptions.isEmpty ? null : _subscriptions.first;
   }
 
+  int _firstUsableIndex(Subscription item) {
+    final index = item.nodes.indexWhere((node) => node['_unsupported_reason'] == null);
+    return index < 0 ? 0 : index;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -91,6 +96,7 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _subscriptions = subscriptions;
           _status = status;
+          if (subscriptions.isNotEmpty) _nodeIndex = _firstUsableIndex(subscriptions.first);
         });
     } catch (_) {
       if (mounted)
@@ -157,7 +163,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _subscriptions = next;
         _subscriptionId = item.id;
-        _nodeIndex = 0;
+        _nodeIndex = _firstUsableIndex(item);
       });
     });
   }
@@ -191,6 +197,9 @@ class _HomePageState extends State<HomePage> {
     if (item == null || item.nodes.isEmpty || _status.state.isBusy) return;
     await _perform(() async {
       final node = item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
+      if (node['_unsupported_reason'] != null) {
+        throw FormatException(node['_unsupported_reason'].toString());
+      }
       final config = buildSingboxConfig(
         node,
         options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid),
@@ -210,7 +219,7 @@ class _HomePageState extends State<HomePage> {
     if (item == null) return;
     await _perform(() async {
       await _store.refresh(item);
-      _nodeIndex = _nodeIndex.clamp(0, item.nodes.length - 1);
+      _nodeIndex = _firstUsableIndex(item);
       _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
       _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
       await _store.save(_subscriptions);
@@ -247,6 +256,9 @@ class _HomePageState extends State<HomePage> {
           return (delay: null, reason: 'ICMP: проверка недоступна');
         }
       case PingMethod.proxyGet:
+        if (node['_unsupported_reason'] != null) {
+          return (delay: null, reason: node['_unsupported_reason'].toString());
+        }
         final config = buildSingboxConfig(node, options: SingboxConfigOptions(
           usePlatformDns: Platform.isAndroid,
         ));
@@ -421,7 +433,9 @@ class _HomePageState extends State<HomePage> {
                     child: IconButton(
                       tooltip: isActive ? 'Отключить VPN' : 'Подключить VPN',
                       onPressed: (_busy || _pingBusy || isConnecting || _status.state == VpnState.disconnecting ||
-                          _status.state == VpnState.reasserting || item == null) ? null : _toggle,
+                          _status.state == VpnState.reasserting || item == null || item.nodes.isEmpty ||
+                          item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)]['_unsupported_reason'] != null)
+                          ? null : _toggle,
                       icon: _busy || isConnecting
                           ? const CircularProgressIndicator()
                           : Icon(Icons.power_settings_new_rounded, size: 55,
@@ -464,7 +478,8 @@ class _HomePageState extends State<HomePage> {
                 child: Card(child: InkWell(
                   borderRadius: BorderRadius.circular(20),
                   onTap: canChange ? () => setState(() {
-                    _subscriptionId = subscription.id; _nodeIndex = 0;
+                    _subscriptionId = subscription.id;
+                    _nodeIndex = _firstUsableIndex(subscription);
                   }) : null,
                   child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
                     Icon(subscription.id == item?.id ? Icons.radio_button_checked : Icons.radio_button_unchecked,
@@ -528,6 +543,7 @@ class _HomePageState extends State<HomePage> {
   Widget _nodeCard(Subscription item, int index, bool canChange) {
     final selected = _selected?.id == item.id && _nodeIndex == index;
     final node = item.nodes[index];
+    final unsupported = node['_unsupported_reason']?.toString();
     final key = _delayKey(item, index);
     final measured = _latencies.containsKey(key);
     final delay = _latencies[key];
@@ -535,7 +551,7 @@ class _HomePageState extends State<HomePage> {
       color: selected ? const Color(0xFF28375C) : const Color(0xFF1D2538),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: canChange ? () => setState(() => _nodeIndex = index) : null,
+        onTap: canChange && unsupported == null ? () => setState(() => _nodeIndex = index) : null,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 10, 7, 10),
           child: Row(children: [
@@ -548,6 +564,8 @@ class _HomePageState extends State<HomePage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
               Text(node['type']?.toString().toUpperCase() ?? 'ПРОКСИ',
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
+              if (unsupported != null) Text(unsupported,
+                style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
               if (_pingErrors[key] != null) Text(_pingErrors[key]!,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
             ])),

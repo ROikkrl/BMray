@@ -13,7 +13,7 @@ import 'dart:convert';
 /// The returned map's "tag" field is set to a human display name (from the URL
 /// fragment `#name`, else `host:port`). Returns null if the link is unrecognized
 /// or cannot be parsed. Never throws.
-Map<String, dynamic>? parseShareLink(String link) {
+Map<String, dynamic>? parseShareLink(String link, {bool includeUnsupported = false}) {
   try {
     final trimmed = link.trim();
     if (trimmed.isEmpty) return null;
@@ -26,9 +26,11 @@ Map<String, dynamic>? parseShareLink(String link) {
       case 'vmess':
         return _parseVmess(trimmed);
       case 'vless':
-        return _parseVless(trimmed);
+        return _parseVless(trimmed) ??
+            (includeUnsupported ? _unsupportedXhttpLink(trimmed) : null);
       case 'trojan':
-        return _parseTrojan(trimmed);
+        return _parseTrojan(trimmed) ??
+            (includeUnsupported ? _unsupportedXhttpLink(trimmed) : null);
       case 'ss':
         return _parseShadowsocks(trimmed);
       case 'hysteria2':
@@ -48,7 +50,7 @@ Map<String, dynamic>? parseShareLink(String link) {
 /// links, or a single base64 blob that decodes to newline-separated links.
 /// Returns the list of outbound json objects, skipping unparseable lines.
 /// Never throws.
-List<Map<String, dynamic>> parseSubscription(String content) {
+List<Map<String, dynamic>> parseSubscription(String content, {bool includeUnsupported = false}) {
   final result = <Map<String, dynamic>>[];
   final trimmed = content.trim();
   if (trimmed.isEmpty) return result;
@@ -56,7 +58,7 @@ List<Map<String, dynamic>> parseSubscription(String content) {
   // sing-box JSON subscription (v2board/xboard return this when the client UA
   // contains "sing-box"): pull the proxy outbounds directly.
   if (trimmed.startsWith('{')) {
-    final fromJson = _parseSingboxOutbounds(trimmed);
+    final fromJson = _parseSingboxOutbounds(trimmed, includeUnsupported: includeUnsupported);
     if (fromJson.isNotEmpty) return fromJson;
   }
 
@@ -74,7 +76,7 @@ List<Map<String, dynamic>> parseSubscription(String content) {
   for (final rawLine in const LineSplitter().convert(text)) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
-    final parsed = parseShareLink(line);
+    final parsed = parseShareLink(line, includeUnsupported: includeUnsupported);
     if (parsed != null) result.add(parsed);
   }
   return result;
@@ -82,7 +84,8 @@ List<Map<String, dynamic>> parseSubscription(String content) {
 
 /// Extract proxy outbounds from a sing-box JSON config (an alternative
 /// subscription format returned by v2board/xboard for sing-box clients).
-List<Map<String, dynamic>> _parseSingboxOutbounds(String jsonText) {
+List<Map<String, dynamic>> _parseSingboxOutbounds(String jsonText,
+    {required bool includeUnsupported}) {
   const proxyTypes = {
     'vmess',
     'vless',
@@ -109,6 +112,11 @@ List<Map<String, dynamic>> _parseSingboxOutbounds(String jsonText) {
         final m = Map<String, dynamic>.from(o);
         final tag = (m['tag'] ?? '').toString().trim();
         if (tag.isEmpty) m['tag'] = '${m['server']}:${m['server_port']}';
+        if (m['transport'] is Map &&
+            (m['transport'] as Map)['type']?.toString().toLowerCase() == 'xhttp') {
+          if (!includeUnsupported) continue;
+          m['_unsupported_reason'] = 'XHTTP требует ядро Xray';
+        }
         result.add(m);
       }
     }
@@ -262,6 +270,24 @@ Map<String, dynamic>? _buildTransport({
 bool _supportedNetwork(String? network) => const {
   '', 'tcp', 'ws', 'websocket', 'grpc', 'http', 'h2', 'httpupgrade', 'quic',
 }.contains((network ?? 'tcp').toLowerCase());
+
+/// Keep XHTTP entries visible without producing a misleading TCP outbound.
+Map<String, dynamic>? _unsupportedXhttpLink(String link) {
+  final scheme = link.substring(0, link.indexOf('://')).toLowerCase();
+  if (scheme != 'vless' && scheme != 'trojan') return null;
+  final parts = _parseUriStyle(link, scheme);
+  if (parts == null || parts.userInfo.isEmpty ||
+      (parts.params['type'] ?? parts.params['net'])?.toLowerCase() != 'xhttp') {
+    return null;
+  }
+  return {
+    'type': scheme,
+    'tag': _tagFor(parts),
+    'server': parts.host,
+    'server_port': parts.port,
+    '_unsupported_reason': 'XHTTP требует ядро Xray',
+  };
+}
 
 // ---------------------------------------------------------------------------
 // vmess:// (v2rayN base64 JSON)

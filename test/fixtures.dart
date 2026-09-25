@@ -23,6 +23,8 @@ const xrayFixture = '''
      "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"www.example.org","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","shortId":"0123456789abcdef","fingerprint":"qq"}}},
     {"tag":"FALLBACK_","protocol":"vless","settings":{"vnext":[{"address":"backup.example.com","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000001"}]}]},
      "streamSettings":{"network":"xhttp","security":"tls"}},
+    {"tag":"GRPC_","protocol":"vless","settings":{"vnext":[{"address":"grpc.example.com","port":8443,"users":[{"id":"00000000-0000-4000-8000-000000000001"}]}]},
+     "streamSettings":{"network":"grpc","grpcSettings":{"serviceName":"service"},"security":"reality","realitySettings":{"serverName":"www.example.org","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","shortId":"0123456789abcdef","fingerprint":"chrome"}}},
     {"tag":"direct","protocol":"freedom"}
   ]
 }

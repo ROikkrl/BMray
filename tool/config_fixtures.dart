@@ -17,8 +17,11 @@ void main() {
         .writeAsStringSync(jsonEncode(config));
   }
   final xray = parseXrayTemplate(xrayFixture)!;
-  final config = buildSingboxConfig(xray.nodes.single,
+  final config = buildSingboxConfig(xray.nodes.first,
       options: const SingboxConfigOptions(usePlatformDns: true));
   (config['route']['rules'] as List).addAll(xray.directRules);
   File('build/config-check/xray.json').writeAsStringSync(jsonEncode(config));
+  final grpcConfig = buildSingboxConfig(xray.nodes[2],
+      options: const SingboxConfigOptions(usePlatformDns: true));
+  File('build/config-check/xray-grpc.json').writeAsStringSync(jsonEncode(grpcConfig));
 }

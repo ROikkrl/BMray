@@ -84,7 +84,7 @@ class SubscriptionStore {
         throw const FormatException('Не удалось разобрать Xray JSON.');
       }
       if (template.nodes.isEmpty) {
-        throw const FormatException('Этот Xray JSON содержит только неподдерживаемые транспорты (например, XHTTP).');
+        throw const FormatException('В Xray JSON нет клиентских серверов с адресом и учётными данными.');
       }
       return Subscription(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -104,7 +104,7 @@ class SubscriptionStore {
       'tuic',
     };
     if (normalized != null && shareSchemes.contains(normalized.scheme)) {
-      final node = parseShareLink(input);
+      final node = parseShareLink(input, includeUnsupported: true);
       if (node == null) {
         throw const FormatException(
           'Не удалось разобрать ссылку сервера. Проверьте, что она скопирована полностью.',
@@ -117,6 +117,7 @@ class SubscriptionStore {
             : name.trim(),
         url: input,
         nodes: [node],
+        notice: node['_unsupported_reason']?.toString(),
       );
     }
     if (normalized == null ||
@@ -174,16 +175,20 @@ class SubscriptionStore {
       return (nodes: xray.nodes, name: xray.name, notice: xray.notice,
           directRules: xray.directRules);
     }
-    final standard = parseSubscription(content);
+    final standard = parseSubscription(content, includeUnsupported: true);
     if (standard.isNotEmpty) {
-      final hasXhttp = RegExp(r'(?:type|net)=xhttp(?:&|#|$)', caseSensitive: false)
-          .hasMatch(content);
+      final unsupported = standard.where((node) => node['_unsupported_reason'] != null).length;
       return (nodes: standard, name: null,
-          notice: hasXhttp ? 'Ссылки XHTTP пропущены: sing-box не поддерживает этот транспорт.' : null,
+          notice: unsupported == 0 ? null :
+              '$unsupported из ${standard.length} серверов показаны, но XHTTP требует ядро Xray.',
           directRules: <Map<String, dynamic>>[]);
     }
     try {
-      return (nodes: parseClashSubscription(content), name: null, notice: null,
+      final nodes = parseClashSubscription(content, includeUnsupported: true);
+      final unsupported = nodes.where((node) => node['_unsupported_reason'] != null).length;
+      return (nodes: nodes, name: null,
+          notice: unsupported == 0 ? null :
+              '$unsupported из ${nodes.length} серверов показаны, но XHTTP требует ядро Xray.',
           directRules: <Map<String, dynamic>>[]);
     } catch (_) {
       return (nodes: <Map<String, dynamic>>[], name: null, notice: null,
