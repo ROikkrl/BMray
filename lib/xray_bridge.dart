@@ -33,7 +33,7 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
     'inbounds': [{
       'tag': 'local-socks', 'listen': '127.0.0.1', 'port': port,
       'protocol': 'socks',
-      'settings': {'auth': 'password', 'accounts': [{'user': user, 'pass': password}], 'udp': true},
+      'settings': {'auth': 'password', 'users': [{'user': user, 'pass': password}], 'udp': true},
     }],
     'outbounds': [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
   };
