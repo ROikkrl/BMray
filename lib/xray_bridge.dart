@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:vpn_plugin/vpn_plugin.dart';
+import '../packages/vpn_plugin/lib/src/singbox_config.dart';
 
 /// One Xray process per tunnel/probe. SOCKS credentials guard the loopback port.
 class XrayBridge {
