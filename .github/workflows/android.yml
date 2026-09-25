@@ -92,3 +92,46 @@ jobs:
           path: |
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/bundle/release/app-release.aab
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: BMray-android-test-${{ github.run_number }}
+          path: release-artifact
+      - name: Publish test build to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version: \([0-9][0-9.]*\)+[0-9][0-9]*$/\1/p' pubspec.yaml)"
+          if [[ -z "$version" ]]; then
+            echo 'Invalid pubspec version' >&2
+            exit 1
+          fi
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; version bump required for a new release."
+            exit 0
+          fi
+          apk="release-artifact/flutter-apk/app-release.apk"
+          aab="release-artifact/bundle/release/app-release.aab"
+          test -s "$apk"
+          test -s "$aab"
+          mkdir -p release-assets
+          cp "$apk" "release-assets/BMray-$version-android.apk"
+          cp "$aab" "release-assets/BMray-$version-android.aab"
+          sha256sum release-assets/*
+          notes="release-notes/$tag.md"
+          if [[ -f "$notes" ]]; then
+            gh release create "$tag" release-assets/* --target "$GITHUB_SHA" \
+              --title "BMray $version (test build)" --prerelease --notes-file "$notes"
+          else
+            gh release create "$tag" release-assets/* --target "$GITHUB_SHA" \
+              --title "BMray $version (test build)" --prerelease --generate-notes
+          fi
