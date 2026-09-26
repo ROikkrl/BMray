@@ -28,6 +28,18 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
       ? jsonDecode(jsonEncode(raw)) as Map<String, dynamic>
       : _toXrayOutbound(node);
   outbound['tag'] = 'proxy';
+  // Xray requires the VLESS encryption field even in older client templates.
+  final servers = (outbound['settings'] as Map?)?['vnext'];
+  if (servers is List) {
+    for (final server in servers) {
+      final users = server is Map ? server['users'] : null;
+      if (users is List) {
+        for (final user in users) {
+          if (user is Map) user['encryption'] ??= 'none';
+        }
+      }
+    }
+  }
   final xray = <String, dynamic>{
     'log': {'loglevel': 'warning'},
     'inbounds': [{
