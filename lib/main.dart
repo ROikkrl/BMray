@@ -61,6 +61,9 @@ class _HomePageState extends State<HomePage> {
   bool _busy = false;
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
+  int _pageIndex = 0;
+  late final Future<String> _coreVersion = _vpn.coreVersion();
+  late Future<String> _logs = _vpn.readLogs();
   final Map<String, int?> _latencies = {};
   final Map<String, String> _pingErrors = {};
   String? _error;
@@ -319,11 +322,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _showLogs() async {
-    final logs = await _vpn.readLogs();
-    if (!mounted) return;
-    // Never display/copy a complete share link or a user UUID.
-    final safeLogs = logs
+  String _safeLogs(String logs) => logs
         .replaceAll(
           RegExp(r'(?:vless|vmess|trojan|ss|hy2|hysteria2|tuic)://\S+'),
           '[ссылка скрыта]',
@@ -332,38 +331,6 @@ class _HomePageState extends State<HomePage> {
           RegExp(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'),
           '[UUID скрыт]',
         );
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Журнал подключения'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              safeLogs.isEmpty
-                  ? 'Журнал пуст. Попробуйте подключиться и открыть сайт.'
-                  : safeLogs,
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: safeLogs.isEmpty
-                ? null
-                : () async {
-                    await Clipboard.setData(ClipboardData(text: safeLogs));
-                    if (ctx.mounted) Navigator.pop(ctx);
-                  },
-            child: const Text('Копировать'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Закрыть'),
-          ),
-        ],
-      ),
-    );
-  }
 
   Future<void> _remove() async {
     final item = _selected;
@@ -424,59 +391,23 @@ class _HomePageState extends State<HomePage> {
           const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
         ]),
         actions: [
-          IconButton(tooltip: 'Журнал', onPressed: _showLogs,
-              icon: const Icon(Icons.receipt_long_outlined)),
-          IconButton(tooltip: 'Добавить подписку', onPressed: _busy ? null : _add,
-              icon: const Icon(Icons.add_circle_outline_rounded)),
+          if (_pageIndex == 0) IconButton(
+            tooltip: 'Добавить подписку', onPressed: _busy ? null : _add,
+            icon: const Icon(Icons.add_circle_outline_rounded)),
         ],
       ),
-      body: SafeArea(
+      body: _pageIndex == 1 ? _settingsView() : SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(children: [
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 116, width: 116,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: isActive ? const Color(0xFF214E57) : const Color(0xFF273459),
-                      border: Border.all(
-                        color: isActive ? const Color(0xFF53E0C3) : const Color(0xFF7890FF), width: 2,
-                      ),
-                    ),
-                    child: IconButton(
-                      tooltip: isActive ? 'Отключить VPN' : 'Подключить VPN',
-                      onPressed: (_busy || _pingBusy || isConnecting || _status.state == VpnState.disconnecting ||
-                          _status.state == VpnState.reasserting || item == null || item.nodes.isEmpty ||
-                          item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)]['_unsupported_reason'] != null)
-                          ? null : _toggle,
-                      icon: _busy || isConnecting
-                          ? const CircularProgressIndicator()
-                          : Icon(Icons.power_settings_new_rounded, size: 55,
-                              color: isActive ? const Color(0xFF53E0C3) : const Color(0xFF91A4FF)),
-                    ),
-                  ),
-                  const SizedBox(height: 15),
-                  Text(label, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 5),
-                  Text(item == null ? 'Добавьте подписку, чтобы начать' :
-                      (item.nodes.isEmpty ? item.name : item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)]['tag']?.toString() ?? item.name),
-                    textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Color(0xFF9DAEC7))),
-                ]),
-              ),
-            ),
             if (_error != null) Padding(
               padding: const EdgeInsets.only(top: 12),
               child: Card(color: Theme.of(context).colorScheme.errorContainer,
                 child: Padding(padding: const EdgeInsets.all(14),
-                  child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)))),
+                  child: Text(_error!, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)))),
             ),
-            const SizedBox(height: 22),
+            const SizedBox(height: 8),
             Row(children: [
               const Expanded(child: Text('Подписки', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
               IconButton(tooltip: 'Обновить выбранную подписку',
@@ -517,7 +448,9 @@ class _HomePageState extends State<HomePage> {
                     child: Row(children: [
                       const Icon(Icons.info_outline_rounded, size: 20),
                       const SizedBox(width: 10),
-                      Expanded(child: Text(item.notice!, style: const TextStyle(fontSize: 12))),
+                      Expanded(child: Text(item.notice!, maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12))),
                     ]))),
               ),
               const SizedBox(height: 18),
@@ -531,21 +464,6 @@ class _HomePageState extends State<HomePage> {
                   label: const Text('Проверить все'),
                 ),
               ]),
-              const SizedBox(height: 6),
-              SingleChildScrollView(scrollDirection: Axis.horizontal, child: SegmentedButton<PingMethod>(
-                segments: const [
-                  ButtonSegment(value: PingMethod.proxyGet, label: Text('Proxy GET')),
-                  ButtonSegment(value: PingMethod.tcp, label: Text('TCP')),
-                  ButtonSegment(value: PingMethod.icmp, label: Text('ICMP')),
-                ],
-                selected: {_pingMethod},
-                onSelectionChanged: _pingBusy ? null : (values) => setState(() => _pingMethod = values.first),
-              )),
-              if (_pingMethod == PingMethod.icmp) const Padding(
-                padding: EdgeInsets.only(top: 7, bottom: 4),
-                child: Text('ICMP проверяется без VPN. Перед проверкой отключите подключение.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9DAEC7))),
-              ),
               const SizedBox(height: 12),
               for (var i = 0; i < item.nodes.length; i++) Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -555,8 +473,170 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
       ),
+      bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
+        if (_pageIndex == 0) _connectionBar(item, label, isActive, isConnecting),
+        NavigationBar(
+          selectedIndex: _pageIndex,
+          onDestinationSelected: (index) => setState(() {
+            _pageIndex = index;
+            if (index == 1) _logs = _vpn.readLogs();
+          }),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.dns_outlined), label: 'Серверы'),
+            NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Настройки'),
+          ],
+        ),
+      ]),
     );
   }
+
+  Widget _connectionBar(Subscription? item, String label,
+      bool isActive, bool isConnecting) {
+    final node = item == null || item.nodes.isEmpty ? null
+        : item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
+    final canToggle = !_busy && !_pingBusy &&
+        _status.state != VpnState.disconnecting &&
+        _status.state != VpnState.reasserting && !isConnecting &&
+        (isActive || (node != null && node['_unsupported_reason'] == null));
+    return Material(
+      color: const Color(0xFF1D2538),
+      child: SafeArea(top: false, bottom: false, child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: Row(children: [
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+              Text(node?['tag']?.toString() ??
+                  (item?.name ?? 'Добавьте подписку, чтобы начать'),
+                maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF9DAEC7))),
+            ],
+          )),
+          const SizedBox(width: 12),
+          FilledButton.icon(
+            onPressed: canToggle ? _toggle : null,
+            icon: _busy || isConnecting
+                ? const SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.power_settings_new_rounded),
+            label: Text(isActive ? 'Отключить' : 'Подключить'),
+          ),
+        ]),
+      )),
+    );
+  }
+
+  Widget _settingsView() => SafeArea(child: DefaultTabController(
+    length: 3,
+    child: Column(children: [
+      const TabBar(tabs: [
+        Tab(text: 'Пинг'), Tab(text: 'Информация'), Tab(text: 'Логи'),
+      ]),
+      Expanded(child: TabBarView(children: [
+        _pingSettingsView(), _informationView(), _logsView(),
+      ])),
+    ]),
+  ));
+
+  Widget _pingSettingsView() {
+    final description = switch (_pingMethod) {
+      PingMethod.proxyGet =>
+        'Proxy GET: выполняет настоящий HTTPS GET через выбранный сервер. '
+        'Проверяет, что прокси подключается и передаёт данные.',
+      PingMethod.tcp =>
+        'TCP: измеряет время прямого соединения с адресом и портом сервера. '
+        'Не проверяет авторизацию и работу прокси.',
+      PingMethod.icmp =>
+        'ICMP: отправляет эхо-запрос на адрес сервера без прокси. '
+        'Сервер может не отвечать на ICMP, даже если подключение работает. '
+        'Перед проверкой отключите VPN.',
+    };
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      const Text('Способ проверки', style: TextStyle(
+        fontSize: 20, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 16),
+      SingleChildScrollView(scrollDirection: Axis.horizontal,
+        child: SegmentedButton<PingMethod>(
+          segments: const [
+            ButtonSegment(value: PingMethod.proxyGet, label: Text('Proxy GET')),
+            ButtonSegment(value: PingMethod.tcp, label: Text('TCP')),
+            ButtonSegment(value: PingMethod.icmp, label: Text('ICMP')),
+          ],
+          selected: {_pingMethod},
+          onSelectionChanged: _pingBusy ? null : (values) =>
+              setState(() => _pingMethod = values.first),
+        ),
+      ),
+      const SizedBox(height: 16),
+      Card(child: Padding(padding: const EdgeInsets.all(16),
+        child: Text(description))),
+      const SizedBox(height: 12),
+      const Text('Выбранный способ применяется к кнопкам проверки на экране серверов.',
+        style: TextStyle(color: Color(0xFF9DAEC7))),
+    ]);
+  }
+
+  Widget _informationView() => FutureBuilder<String>(
+    future: _coreVersion,
+    builder: (context, snapshot) => ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('Информация', style: TextStyle(
+          fontSize: 20, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 12),
+        _infoTile('Приложение', 'BMray 0.1.8 (сборка 9)'),
+        _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
+        _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
+            snapshot.data ?? 'Загрузка…'),
+        _infoTile('Платформа', Platform.operatingSystem),
+        _infoTile('Система', Platform.operatingSystemVersion),
+        _infoTile('Среда Dart', Platform.version),
+      ],
+    ),
+  );
+
+  Widget _infoTile(String title, String value) => Card(
+    child: Padding(padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(color: Color(0xFF9DAEC7))),
+        const SizedBox(height: 4),
+        SelectableText(value),
+      ])),
+  );
+
+  Widget _logsView() => FutureBuilder<String>(
+    future: _logs,
+    builder: (context, snapshot) {
+      final logs = _safeLogs(snapshot.data ?? '');
+      return Padding(padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          Row(children: [
+            const Expanded(child: Text('Журнал подключения',
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+            IconButton(tooltip: 'Обновить', onPressed: () =>
+              setState(() => _logs = _vpn.readLogs()),
+              icon: const Icon(Icons.refresh_rounded)),
+            IconButton(tooltip: 'Копировать', onPressed: logs.isEmpty ? null :
+              () => Clipboard.setData(ClipboardData(text: logs)),
+              icon: const Icon(Icons.copy_rounded)),
+          ]),
+          const SizedBox(height: 12),
+          Expanded(child: Card(child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: SingleChildScrollView(child: SelectableText(
+              snapshot.hasError ? 'Не удалось прочитать журнал.' :
+              snapshot.connectionState != ConnectionState.done ? 'Загрузка…' :
+              logs.isEmpty ? 'Журнал пуст. Попробуйте подключиться и открыть сайт.' : logs,
+            )),
+          ))),
+        ]),
+      );
+    },
+  );
 
   Widget _nodeCard(Subscription item, int index, bool canChange) {
     final selected = _selected?.id == item.id && _nodeIndex == index;
@@ -567,33 +647,41 @@ class _HomePageState extends State<HomePage> {
     final delay = _latencies[key];
     return Card(
       color: selected ? const Color(0xFF28375C) : const Color(0xFF1D2538),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: selected ? const BorderSide(color: Color(0xFF91A4FF), width: 1.5)
+            : BorderSide.none,
+      ),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: canChange && unsupported == null ? () => setState(() => _nodeIndex = index) : null,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 7, 10),
+          padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
           child: Row(children: [
-            Icon(selected ? Icons.check_circle_rounded : Icons.circle_outlined,
-              color: selected ? const Color(0xFF91A4FF) : const Color(0xFF65748F)),
-            const SizedBox(width: 12),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(node['tag']?.toString() ?? 'Сервер ${index + 1}',
-                maxLines: 2, overflow: TextOverflow.ellipsis,
+                maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w600)),
-              Text(nodeLabel(node),
+              Text(nodeLabel(node), maxLines: 1, softWrap: false,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
               if (unsupported != null) Text(unsupported,
+                maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
               if (_pingErrors[key] != null) Text(_pingErrors[key]!,
+                maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
             ])),
+            const SizedBox(width: 6),
             if (measured) Text(delay == null ? '—' : '$delay мс',
+              maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
-                fontWeight: FontWeight.w600)),
+                fontSize: 12, fontWeight: FontWeight.w600)),
             IconButton(
               tooltip: 'Проверить сервер',
               onPressed: _pingBusy ? null : () => _ping(item, [index]),
-              icon: const Icon(Icons.speed_outlined, size: 21),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.speed_outlined, size: 19),
             ),
           ]),
         ),
