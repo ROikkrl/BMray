@@ -526,7 +526,7 @@ class _HomePageState extends State<HomePage> {
             if (_subscriptions.isEmpty)
               Card(child: Padding(padding: const EdgeInsets.all(18), child: Text(
                 'Нажмите +, чтобы добавить подписку или ссылку сервера.',
-                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))))
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)))),
             for (final subscription in _subscriptions) Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: _subscriptionCard(subscription, canChange),
