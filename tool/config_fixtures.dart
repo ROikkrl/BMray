@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../packages/vpn_plugin/lib/src/share_link_parser.dart';
-import '../packages/vpn_plugin/lib/src/singbox_config.dart';
+import 'package:vpn_plugin/src/singbox_config.dart';
 import '../test/fixtures.dart';
 import '../lib/xray_subscription.dart';
 import '../lib/xray_bridge.dart';
