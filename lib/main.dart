@@ -61,6 +61,7 @@ class _HomePageState extends State<HomePage> {
   bool _busy = false;
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
+  // 0: servers, 1: settings, 2: ping, 3: information, 4: logs.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
   late Future<String> _logs = _vpn.readLogs();
@@ -381,23 +382,52 @@ class _HomePageState extends State<HomePage> {
       VpnState.error => 'Ошибка подключения',
       _ => 'Не подключено',
     };
-    return Scaffold(
+    return PopScope(
+      canPop: _pageIndex == 0,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) setState(() => _pageIndex = _pageIndex == 1 ? 0 : 1);
+      },
+      child: Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF101827),
-        title: Row(mainAxisSize: MainAxisSize.min, children: [
+        leading: IconButton(
+          tooltip: _pageIndex == 0 ? 'Настройки' : 'Назад',
+          onPressed: () => setState(() {
+            if (_pageIndex == 0) {
+              _pageIndex = 1;
+              _logs = _vpn.readLogs();
+            } else {
+              _pageIndex = _pageIndex == 1 ? 0 : 1;
+            }
+          }),
+          icon: Icon(_pageIndex == 0 ? Icons.settings_rounded : Icons.arrow_back_rounded),
+        ),
+        title: _pageIndex == 0 ? Row(mainAxisSize: MainAxisSize.min, children: [
           ClipRRect(borderRadius: BorderRadius.circular(7),
             child: Image.asset('assets/brand/logo.jpg', width: 34, height: 34)),
           const SizedBox(width: 10),
           const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
-        ]),
+        ]) : Text(switch (_pageIndex) {
+          1 => 'Настройки', 2 => 'Пинг', 3 => 'Информация', _ => 'Логи',
+        }),
         actions: [
           if (_pageIndex == 0) IconButton(
             tooltip: 'Добавить подписку', onPressed: _busy ? null : _add,
             icon: const Icon(Icons.add_circle_outline_rounded)),
         ],
       ),
-      body: _pageIndex == 1 ? _settingsView() : SafeArea(
-        child: ListView(
+      body: _pageIndex != 0 ? SafeArea(child: switch (_pageIndex) {
+        1 => _settingsView(),
+        2 => _pingSettingsView(),
+        3 => _informationView(),
+        _ => _logsView(),
+      }) : SafeArea(child: LayoutBuilder(builder: (context, constraints) => Column(
+        children: [
+          SizedBox(
+            height: constraints.maxHeight * 0.31,
+            child: _connectionPanel(item, label, isActive, isConnecting),
+          ),
+          Expanded(child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           children: [
             if (_error != null) Padding(
@@ -471,26 +501,14 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ],
-        ),
+          )),
+        ],
+      ))),
       ),
-      bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
-        if (_pageIndex == 0) _connectionBar(item, label, isActive, isConnecting),
-        NavigationBar(
-          selectedIndex: _pageIndex,
-          onDestinationSelected: (index) => setState(() {
-            _pageIndex = index;
-            if (index == 1) _logs = _vpn.readLogs();
-          }),
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.dns_outlined), label: 'Серверы'),
-            NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Настройки'),
-          ],
-        ),
-      ]),
     );
   }
 
-  Widget _connectionBar(Subscription? item, String label,
+  Widget _connectionPanel(Subscription? item, String label,
       bool isActive, bool isConnecting) {
     final node = item == null || item.nodes.isEmpty ? null
         : item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
@@ -498,48 +516,83 @@ class _HomePageState extends State<HomePage> {
         _status.state != VpnState.disconnecting &&
         _status.state != VpnState.reasserting && !isConnecting &&
         (isActive || (node != null && node['_unsupported_reason'] == null));
-    return Material(
-      color: const Color(0xFF1D2538),
-      child: SafeArea(top: false, bottom: false, child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-        child: Row(children: [
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-              Text(node?['tag']?.toString() ??
-                  (item?.name ?? 'Добавьте подписку, чтобы начать'),
-                maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Color(0xFF9DAEC7))),
-            ],
-          )),
-          const SizedBox(width: 12),
-          FilledButton.icon(
-            onPressed: canToggle ? _toggle : null,
-            icon: _busy || isConnecting
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.power_settings_new_rounded),
-            label: Text(isActive ? 'Отключить' : 'Подключить'),
+    return LayoutBuilder(builder: (context, constraints) {
+      final diameter = (constraints.maxHeight * 0.55).clamp(64.0, 144.0).toDouble();
+      return Container(
+        width: double.infinity,
+        decoration: const BoxDecoration(gradient: LinearGradient(
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: [Color(0xFF1D2260), Color(0xFF171B4D), Color(0xFF101827)],
+        )),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Semantics(
+            button: true,
+            label: isActive ? 'Отключить VPN' : 'Подключить VPN',
+            child: Material(
+              color: isActive ? const Color(0xFF214E57) : const Color(0xFF333087),
+              shape: CircleBorder(side: BorderSide(
+                color: isActive ? const Color(0xFF53E0C3) : const Color(0xFF7976F6),
+                width: 5,
+              )),
+              elevation: 10,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: canToggle ? _toggle : null,
+                child: SizedBox(width: diameter, height: diameter,
+                  child: Center(child: _busy || isConnecting
+                    ? const CircularProgressIndicator()
+                    : Icon(Icons.power_settings_new_rounded,
+                        size: diameter * 0.43,
+                        color: isActive ? const Color(0xFF53E0C3)
+                            : const Color(0xFFB6B9FF))),
+                ),
+              ),
+            ),
           ),
+          const SizedBox(height: 8),
+          Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(node?['tag']?.toString() ??
+                (item?.name ?? 'Добавьте подписку, чтобы начать'),
+              maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: Color(0xFFB4BDDD)))),
         ]),
-      )),
-    );
+      );
+    });
   }
 
-  Widget _settingsView() => SafeArea(child: DefaultTabController(
-    length: 3,
-    child: Column(children: [
-      const TabBar(tabs: [
-        Tab(text: 'Пинг'), Tab(text: 'Информация'), Tab(text: 'Логи'),
-      ]),
-      Expanded(child: TabBarView(children: [
-        _pingSettingsView(), _informationView(), _logsView(),
-      ])),
-    ]),
-  ));
+  Widget _settingsView() => ListView(children: [
+    _settingsHeading('Проверка соединения'),
+    _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
+    _settingsHeading('Приложение'),
+    _settingsEntry('Журнал подключения', 'Логи ядра и VPN',
+        Icons.receipt_long_outlined, 4),
+    _settingsEntry('Информация', 'Версии и сведения о системе',
+        Icons.info_outline_rounded, 3),
+  ]);
+
+  Widget _settingsHeading(String title) => Padding(
+    padding: const EdgeInsets.fromLTRB(20, 28, 20, 8),
+    child: Text(title, style: const TextStyle(
+      fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF9794FF))),
+  );
+
+  Widget _settingsEntry(String title, String subtitle, IconData icon, int page) =>
+    Column(children: [
+      ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+        leading: Icon(icon),
+        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: () => setState(() {
+          _pageIndex = page;
+          if (page == 4) _logs = _vpn.readLogs();
+        }),
+      ),
+      const Divider(height: 1),
+    ]);
 
   Widget _pingSettingsView() {
     final description = switch (_pingMethod) {
@@ -587,7 +640,7 @@ class _HomePageState extends State<HomePage> {
         const Text('Информация', style: TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
-        _infoTile('Приложение', 'BMray 0.1.8 (сборка 9)'),
+        _infoTile('Приложение', 'BMray 0.1.9 (сборка 10)'),
         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
             snapshot.data ?? 'Загрузка…'),
