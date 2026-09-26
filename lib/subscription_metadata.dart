@@ -10,6 +10,7 @@ class SubscriptionTraffic {
 
   int? get used => upload == null && download == null
       ? null : (upload ?? 0) + (download ?? 0);
+  bool get unlimited => total == 0;
 
   static SubscriptionTraffic? fromHeader(String? header) {
     if (header == null || header.trim().isEmpty) return null;

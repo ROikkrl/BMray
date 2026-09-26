@@ -165,8 +165,47 @@ XrayTemplate? parseXrayTemplate(String content) {
   if (unsupported.isNotEmpty) {
     notices.add('Серверы ${unsupported.join(', ')} требуют другого транспорта.');
   }
-  if (routing is Map && routing['balancers'] is List && (routing['balancers'] as List).isNotEmpty) {
-    notices.add('Автоматический балансировщик Xray не перенесён; выберите доступный сервер вручную.');
+  if (routing is Map && routing['balancers'] is List) {
+    for (final candidate in routing['balancers'] as List) {
+      if (candidate is! Map || candidate['tag'] is! String ||
+          candidate['selector'] is! List) continue;
+      final selectors = (candidate['selector'] as List).map((x) => x.toString()).toList();
+      final matched = <Map<String, dynamic>>[];
+      for (final outbound in root['outbounds'] as List) {
+        if (outbound is! Map) continue;
+        final tag = outbound['tag']?.toString() ?? '';
+        if (selectors.any((prefix) => tag.startsWith(prefix)) ||
+            tag == candidate['fallbackTag']) {
+          matched.add(Map<String, dynamic>.from(outbound));
+        }
+      }
+      if (!matched.any((entry) => selectors.any(
+          (prefix) => entry['tag']?.toString().startsWith(prefix) == true))) continue;
+      final first = matched.firstWhere((entry) => selectors.any(
+          (prefix) => entry['tag']?.toString().startsWith(prefix) == true));
+      final vnext = (first['settings'] as Map?)?['vnext'];
+      final target = vnext is List && vnext.isNotEmpty ? vnext.first : null;
+      final address = target is Map ? target['address']?.toString() : null;
+      final port = target is Map ? int.tryParse('${target['port']}') : null;
+      final config = <String, dynamic>{
+        'outbounds': matched,
+        'routing': {'balancers': [Map<String, dynamic>.from(candidate)]},
+        if (root['burstObservatory'] is Map)
+          'burstObservatory': root['burstObservatory'],
+        if (root['observatory'] is Map) 'observatory': root['observatory'],
+      };
+      nodes.insert(0, {
+        'type': 'auto',
+        'tag': root['remarks']?.toString() ?? candidate['tag'].toString(),
+        if (address != null) 'server': address,
+        if (port != null) 'server_port': port,
+        '_xray_template': config,
+      });
+    }
+    if (nodes.isEmpty && root['remnawave'] is Map) {
+      notices.add('injectHosts заполняется панелью Remnawave. '
+          'Импортируйте ссылку на выданную подписку с готовыми серверами.');
+    }
   }
   if (skippedGeo) notices.add('Часть правил geosite/geoip не перенесена.');
   return XrayTemplate(root['remarks']?.toString(), nodes, directRules,

@@ -12,6 +12,7 @@ void main() {
     expect(usage.total, 1048576);
     expect(usage.expire, 0);
     expect(SubscriptionTraffic.fromHeader('total=0')!.used, isNull);
+    expect(SubscriptionTraffic.fromHeader('upload=3; download=7; total=0')!.unlimited, true);
     expect(SubscriptionTraffic.fromHeader('invalid'), isNull);
   });
 

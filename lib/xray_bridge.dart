@@ -11,6 +11,7 @@ class XrayBridge {
 }
 
 bool usesXray(Map<String, dynamic> node) =>
+    node['_xray_template'] is Map ||
     (node['type'] == 'hysteria2' && node['_xray_outbound'] is Map) ||
     (node['type'] == 'vless' && node['transport'] is Map &&
     (node['transport'] as Map)['type'] == 'xhttp');
@@ -24,19 +25,25 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   final port = 20000 + random.nextInt(35000);
   final user = 'bmray';
   final password = List.generate(24, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  final template = node['_xray_template'];
   final raw = node['_xray_outbound'];
-  final outbound = raw is Map
+  final outbound = template is Map ? <String, dynamic>{} : raw is Map
       ? jsonDecode(jsonEncode(raw)) as Map<String, dynamic>
       : _toXrayOutbound(node);
-  outbound['tag'] = 'proxy';
+  if (template is! Map) outbound['tag'] = 'proxy';
+  final templateOutbounds = template is Map
+      ? jsonDecode(jsonEncode(template['outbounds'])) as List
+      : null;
   // Xray requires the VLESS encryption field even in older client templates.
-  final servers = (outbound['settings'] as Map?)?['vnext'];
-  if (servers is List) {
-    for (final server in servers) {
-      final users = server is Map ? server['users'] : null;
-      if (users is List) {
-        for (final user in users) {
-          if (user is Map) user['encryption'] ??= 'none';
+  for (final entry in templateOutbounds ?? [outbound]) {
+    final servers = entry is Map ? (entry['settings'] as Map?)?['vnext'] : null;
+    if (servers is List) {
+      for (final server in servers) {
+        final users = server is Map ? server['users'] : null;
+        if (users is List) {
+          for (final user in users) {
+            if (user is Map) user['encryption'] ??= 'none';
+          }
         }
       }
     }
@@ -48,7 +55,18 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
       'protocol': 'socks',
       'settings': {'auth': 'password', 'users': [{'user': user, 'pass': password}], 'udp': true},
     }],
-    'outbounds': [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
+    'outbounds': templateOutbounds ?? [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
+    if (template is Map) 'routing': {
+      'rules': [{
+        'type': 'field', 'network': 'tcp,udp',
+        'balancerTag': (template['routing'] as Map)['balancers'][0]['tag'],
+      }],
+      'balancers': (template['routing'] as Map)['balancers'],
+    },
+    if (template is Map && template['burstObservatory'] is Map)
+      'burstObservatory': template['burstObservatory'],
+    if (template is Map && template['observatory'] is Map)
+      'observatory': template['observatory'],
   };
   final socks = <String, dynamic>{
     'type': 'socks', 'tag': 'proxy', 'server': '127.0.0.1',

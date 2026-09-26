@@ -54,6 +54,7 @@ jobs:
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xray.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xray-grpc.json
           /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/xhttp-bridge.json
+          /tmp/sing-box-1.13.13-linux-amd64/sing-box check -c build/config-check/auto-bridge.json
       - name: Prepare pinned sing-box source
         run: bash scripts/prepare_core.sh
       - uses: actions/setup-go@v5
@@ -66,6 +67,7 @@ jobs:
         run: |
           build/reality-test/xray run -test -config build/config-check/xhttp-xray.json
           build/reality-test/xray run -test -config build/config-check/hysteria-xray.json
+          build/reality-test/xray run -test -config build/config-check/auto-xray.json
       - name: Test proxy GET through sing-box outbound
         run: (cd build/sing-box && go test -tags with_utls -run TestBMrayProbeProxyGET ./experimental/libbox)
       - uses: actions/cache@v4

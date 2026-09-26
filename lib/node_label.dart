@@ -2,6 +2,7 @@
 /// Never guess REALITY from the display name: use the imported security fields.
 String nodeLabel(Map<String, dynamic> node) {
   final type = node['type']?.toString().toLowerCase() ?? '';
+  if (type == 'auto') return 'АВТОБС / XRAY / БАЛАНСИРОВКА';
   final raw = node['_xray_outbound'];
   final stream = raw is Map ? raw['streamSettings'] : null;
   final transport = node['transport'];

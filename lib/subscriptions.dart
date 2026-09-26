@@ -7,6 +7,7 @@ import 'package:vpn_plugin/vpn_plugin.dart';
 import 'clash_subscription.dart';
 import 'subscription_title.dart';
 import 'subscription_metadata.dart';
+import 'subscription_identity.dart';
 import 'xray_subscription.dart';
 
 class Subscription {
@@ -84,6 +85,7 @@ class Subscription {
 class SubscriptionStore {
   static const _storage = FlutterSecureStorage();
   static const _key = 'bmray.subscriptions.v1';
+  SubscriptionIdentity? identity;
 
   Future<List<Subscription>> load() async {
     final value = await _storage.read(key: _key);
@@ -106,7 +108,8 @@ class SubscriptionStore {
         throw const FormatException('Не удалось разобрать Xray JSON.');
       }
       if (template.nodes.isEmpty) {
-        throw const FormatException('В Xray JSON нет клиентских серверов с адресом и учётными данными.');
+        throw FormatException(template.notice ??
+            'В Xray JSON нет клиентских серверов с адресом и учётными данными.');
       }
       return Subscription(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -200,6 +203,41 @@ class SubscriptionStore {
 
   ({List<Map<String, dynamic>> nodes, String? name, String? notice,
       List<Map<String, dynamic>> directRules}) _parse(String content) {
+    final trimmed = content.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[') &&
+        !trimmed.contains('://')) {
+      try {
+        final decoded = utf8.decode(base64.decode(base64.normalize(trimmed)));
+        if (decoded.trimLeft().startsWith('{') || decoded.trimLeft().startsWith('[')) {
+          content = decoded;
+        }
+      } on FormatException {
+        // A normal Base64 list of share links is handled below.
+      }
+    }
+    if (content.trimLeft().startsWith('[')) {
+      try {
+        final entries = jsonDecode(content);
+        if (entries is List) {
+          final nodes = <Map<String, dynamic>>[];
+          final directRules = <Map<String, dynamic>>[];
+          final notices = <String>[];
+          for (final entry in entries) {
+            if (entry is! Map) continue;
+            final profile = parseXrayTemplate(jsonEncode(entry));
+            if (profile == null) continue;
+            nodes.addAll(profile.nodes);
+            directRules.addAll(profile.directRules);
+            if (profile.notice != null) notices.add(profile.notice!);
+          }
+          if (nodes.isNotEmpty) return (nodes: nodes, name: null,
+              notice: notices.isEmpty ? null : notices.join(' '),
+              directRules: directRules);
+        }
+      } on FormatException {
+        // Try the regular subscription formats below.
+      }
+    }
     final xray = parseXrayTemplate(content);
     if (xray != null) {
       return (nodes: xray.nodes, name: xray.name, notice: xray.notice,
@@ -242,7 +280,10 @@ class SubscriptionStore {
             .getUrl(uri)
             .timeout(const Duration(seconds: 15));
         request.followRedirects = false;
-        request.headers.set(HttpHeaders.userAgentHeader, 'sing-box');
+        final headers = (identity ??= await SubscriptionIdentity.load()).requestHeaders;
+        for (final entry in headers.entries) {
+          request.headers.set(entry.key, entry.value);
+        }
         final response = await request.close().timeout(
           const Duration(seconds: 20),
         );

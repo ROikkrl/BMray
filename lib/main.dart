@@ -9,6 +9,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
+import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
 
@@ -57,6 +58,11 @@ class _HomePageState extends State<HomePage> {
   final _store = SubscriptionStore();
   static const _settingsStorage = FlutterSecureStorage();
   static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
+  static const _selectedSubscriptionKey = 'bmray.selectedSubscription';
+  static const _selectedNodeKey = 'bmray.selectedNode';
+  final _hwidInput = TextEditingController();
+  final _userAgentInput = TextEditingController();
+  Future<void> _selectionWrite = Future<void>.value();
   StreamSubscription<VpnStatus>? _statusSubscription;
   Timer? _uptimeTimer;
   Timer? _subscriptionTimer;
@@ -72,7 +78,7 @@ class _HomePageState extends State<HomePage> {
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
   int _proxyTimeoutSeconds = 4;
-  // 0: servers, 1: settings, 2: ping, 3: information, 4: logs.
+  // 0: servers, 1: settings, 2: ping, 3: information, 4: logs, 5: user agent.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
   late Future<String> _logs = _vpn.readLogs();
@@ -123,21 +129,36 @@ class _HomePageState extends State<HomePage> {
   Future<void> _initialize() async {
     try {
       final subscriptions = await _store.load();
+      final identity = await SubscriptionIdentity.load();
+      _store.identity = identity;
       final status = await _vpn.currentStatus();
       String? storedTimeout;
+      String? storedSubscription;
+      String? storedNode;
       try {
         storedTimeout = await _settingsStorage.read(key: _proxyTimeoutKey);
+        storedSubscription = await _settingsStorage.read(key: _selectedSubscriptionKey);
+        storedNode = await _settingsStorage.read(key: _selectedNodeKey);
       } catch (_) {
         // Keep the default when a preference cannot be read.
       }
       if (mounted)
         setState(() {
+          _hwidInput.text = identity.hwid;
+          _userAgentInput.text = identity.userAgent;
           _subscriptions = subscriptions;
           _expandedSubscriptionIds.addAll(subscriptions.map((item) => item.id));
           _setStatus(status);
           final timeout = int.tryParse(storedTimeout ?? '');
           if ([2, 4, 6, 10].contains(timeout)) _proxyTimeoutSeconds = timeout!;
-          if (subscriptions.isNotEmpty) _nodeIndex = _firstUsableIndex(subscriptions.first);
+          if (subscriptions.isNotEmpty) {
+            final index = subscriptions.indexWhere((e) => e.id == storedSubscription);
+            final chosen = index < 0 ? subscriptions.first : subscriptions[index];
+            _subscriptionId = chosen.id;
+            final match = chosen.nodes.indexWhere((node) =>
+                _nodeSelectionKey(node) == storedNode);
+            _nodeIndex = match < 0 ? _firstUsableIndex(chosen) : match;
+          }
         });
       if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
@@ -151,6 +172,8 @@ class _HomePageState extends State<HomePage> {
     _statusSubscription?.cancel();
     _uptimeTimer?.cancel();
     _subscriptionTimer?.cancel();
+    _hwidInput.dispose();
+    _userAgentInput.dispose();
     super.dispose();
   }
 
@@ -194,7 +217,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _importInput(String name, String input) => _perform(() async {
-    final item = await _store.import(name, input);
+    late final Subscription item;
+    try {
+      item = await _store.import(name, input);
+    } catch (_) {
+      if (input.trim().startsWith('https://')) {
+        throw const FormatException('Сервер недоступен, возможно активны белые списки');
+      }
+      rethrow;
+    }
     final next = [..._subscriptions];
     next.insert(next.indexWhere((existing) => !existing.pinned) < 0
         ? next.length : next.indexWhere((existing) => !existing.pinned), item);
@@ -205,7 +236,23 @@ class _HomePageState extends State<HomePage> {
       _nodeIndex = _firstUsableIndex(item);
       _expandedSubscriptionIds.add(item.id);
     });
+    _rememberSelection();
   });
+
+  String _nodeSelectionKey(Map<String, dynamic> node) => jsonEncode([
+    node['tag'], node['server'], node['server_port'], node['uuid'],
+  ]);
+
+  void _rememberSelection() {
+    final selected = _selected;
+    if (selected == null || selected.nodes.isEmpty) return;
+    final id = selected.id;
+    final node = _nodeSelectionKey(selected.nodes[_nodeIndex.clamp(0, selected.nodes.length - 1)]);
+    _selectionWrite = _selectionWrite.then((_) async {
+      await _settingsStorage.write(key: _selectedSubscriptionKey, value: id);
+      await _settingsStorage.write(key: _selectedNodeKey, value: node);
+    }).catchError((Object _) {});
+  }
 
   Future<void> _add() async {
     final name = TextEditingController();
@@ -318,7 +365,11 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _refresh(Subscription item) async {
     await _perform(() async {
-      await _refreshSubscription(item);
+      try {
+        await _refreshSubscription(item);
+      } catch (_) {
+        throw const FormatException('Сервер недоступен, возможно активны белые списки');
+      }
     });
   }
 
@@ -334,6 +385,7 @@ class _HomePageState extends State<HomePage> {
     _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
     _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
     await _store.save(_subscriptions);
+    _rememberSelection();
     if (mounted) setState(() {});
   }
 
@@ -395,6 +447,30 @@ class _HomePageState extends State<HomePage> {
       '${item.id}:$index:${_pingMethod.name}';
 
   Future<({int? delay, String? reason})> _probe(Map<String, dynamic> node) async {
+    if (node['type'] == 'auto' && _pingMethod != PingMethod.proxyGet) {
+      final template = node['_xray_template'];
+      final outbounds = template is Map ? template['outbounds'] : null;
+      final endpoints = <String, Map<String, dynamic>>{};
+      if (outbounds is List) {
+        for (final outbound in outbounds) {
+          final vnext = outbound is Map ? (outbound['settings'] as Map?)?['vnext'] : null;
+          if (vnext is! List || vnext.isEmpty || vnext.first is! Map) continue;
+          final target = vnext.first as Map;
+          final host = target['address']?.toString();
+          final port = int.tryParse('${target['port']}');
+          if (host == null || port == null) continue;
+          endpoints['$host:$port'] = {'server': host, 'server_port': port};
+        }
+      }
+      int? fastest;
+      for (final endpoint in endpoints.values) {
+        final result = await _probe(endpoint);
+        if (result.delay != null &&
+            (fastest == null || result.delay! < fastest)) fastest = result.delay;
+      }
+      return (delay: fastest,
+          reason: fastest == null ? 'Автовыбор: нет ответа от серверов' : null);
+    }
     final host = node['server']?.toString() ?? '';
     final port = node['server_port'];
     switch (_pingMethod) {
@@ -433,7 +509,8 @@ class _HomePageState extends State<HomePage> {
         config['inbounds'] = <Object>[];
         try {
           final result = await _vpn.proxyGetDelay(jsonEncode(config),
-              timeout: Duration(seconds: _proxyTimeoutSeconds),
+              timeout: Duration(seconds: node['type'] == 'auto' &&
+                  _proxyTimeoutSeconds < 12 ? 12 : _proxyTimeoutSeconds),
               xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
           return (delay: result.delay, reason: result.reason);
         } catch (_) {
@@ -519,6 +596,7 @@ class _HomePageState extends State<HomePage> {
             _nodeIndex = next.isEmpty ? 0 : _firstUsableIndex(next.first);
           }
         });
+      _rememberSelection();
     });
   }
 
@@ -563,7 +641,8 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 10),
           const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
         ]) : Text(switch (_pageIndex) {
-          1 => 'Настройки', 2 => 'Пинг', 3 => 'Информация', _ => 'Логи',
+          1 => 'Настройки', 2 => 'Пинг', 3 => 'Информация',
+          4 => 'Логи', _ => 'User-Agent',
         }),
         actions: [
           if (_pageIndex == 0) IconButton(
@@ -575,7 +654,8 @@ class _HomePageState extends State<HomePage> {
         1 => _settingsView(),
         2 => _pingSettingsView(),
         3 => _informationView(),
-        _ => _logsView(),
+        4 => _logsView(),
+        _ => _userAgentView(),
       }) : SafeArea(child: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
           SizedBox(
@@ -589,7 +669,7 @@ class _HomePageState extends State<HomePage> {
               padding: const EdgeInsets.only(top: 12),
               child: Card(color: Theme.of(context).colorScheme.errorContainer,
                 child: Padding(padding: const EdgeInsets.all(14),
-                  child: Text(_error!, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  child: Text(_error!, maxLines: 2, overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)))),
             ),
             const SizedBox(height: 8),
@@ -675,6 +755,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _settingsView() => ListView(children: [
+    _settingsHeading('Подписка'),
+    _settingsEntry('User-Agent', 'HWID, User-Agent и Cookie BMray',
+        Icons.badge_outlined, 5),
     _settingsHeading('Проверка соединения'),
     _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
     _settingsHeading('Приложение'),
@@ -705,6 +788,38 @@ class _HomePageState extends State<HomePage> {
       ),
       const Divider(height: 1),
     ]);
+
+  Widget _userAgentView() => ListView(padding: const EdgeInsets.all(16), children: [
+    const Text('Идентификатор подписки', style: TextStyle(
+      fontSize: 20, fontWeight: FontWeight.w700)),
+    const SizedBox(height: 12),
+    const Text('BMray отправляет постоянный HWID в x-hwid и Cookie BMray. '
+      'Изменение HWID может занять новое место в лимите устройств панели.'),
+    const SizedBox(height: 18),
+    TextField(controller: _hwidInput, autocorrect: false,
+      decoration: const InputDecoration(labelText: 'HWID',
+        helperText: '10–64 символа: латинские буквы, цифры, = или -',
+        border: OutlineInputBorder())),
+    const SizedBox(height: 18),
+    TextField(controller: _userAgentInput, autocorrect: false,
+      decoration: const InputDecoration(labelText: 'User-Agent',
+        border: OutlineInputBorder())),
+    const SizedBox(height: 18),
+    FilledButton(onPressed: _busy ? null : () => _perform(() async {
+      final next = SubscriptionIdentity(
+        _hwidInput.text.trim(), _userAgentInput.text.trim());
+      try {
+        await next.save();
+      } on FormatException catch (error) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(error.message)));
+        rethrow;
+      }
+      _store.identity = next;
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Настройки подписки сохранены')));
+    }), child: const Text('Сохранить')),
+  ]);
 
   Widget _pingSettingsView() {
     final description = switch (_pingMethod) {
@@ -775,7 +890,7 @@ class _HomePageState extends State<HomePage> {
         const Text('Информация', style: TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
-        _infoTile('Приложение', 'BMray 0.2.0 (сборка 11)'),
+        _infoTile('Приложение', 'BMray 0.2.2 (сборка 13)'),
         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
             snapshot.data ?? 'Загрузка…'),
@@ -901,7 +1016,7 @@ class _HomePageState extends State<HomePage> {
           Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Align(alignment: Alignment.centerLeft,
               child: Text('Израсходовано: ${_formatTraffic(item.traffic!.used)} / '
-                  '${_formatTraffic(item.traffic!.total)}',
+                  '${item.traffic!.unlimited ? '∞' : _formatTraffic(item.traffic!.total)}',
                 style: const TextStyle(fontSize: 12,
                   color: Color(0xFF9DAEC7))))),
         Padding(padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
@@ -962,10 +1077,13 @@ class _HomePageState extends State<HomePage> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: canChange && unsupported == null ? () => setState(() {
-          _subscriptionId = item.id;
-          _nodeIndex = index;
-        }) : null,
+        onTap: canChange && unsupported == null ? () {
+          setState(() {
+            _subscriptionId = item.id;
+            _nodeIndex = index;
+          });
+          _rememberSelection();
+        } : null,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
           child: Row(children: [

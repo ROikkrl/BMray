@@ -31,7 +31,7 @@ internal class XraySidecar(private val context: Context, private val prefix: Str
             try { child.inputStream.use { input -> logFile.outputStream().use { input.copyTo(it) } } }
             catch (_: Exception) { }
         }.apply { isDaemon = true; start() }
-        for (attempt in 0 until 60) {
+        for (attempt in 0 until 200) {
             if (!running()) throw IllegalStateException("Xray stopped: ${logFile.takeLast(600)}")
             try {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 100) }

@@ -18,17 +18,23 @@ void main() {
         .writeAsStringSync(jsonEncode(config));
   }
   final xray = parseXrayTemplate(xrayFixture)!;
-  final config = buildSingboxConfig(xray.nodes.first,
+  final config = buildSingboxConfig(xray.nodes[1],
       options: const SingboxConfigOptions(usePlatformDns: true));
   (config['route']['rules'] as List).addAll(xray.directRules);
   File('build/config-check/xray.json').writeAsStringSync(jsonEncode(config));
-  final grpcConfig = buildSingboxConfig(xray.nodes[2],
+  final grpcConfig = buildSingboxConfig(xray.nodes[3],
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xray-grpc.json').writeAsStringSync(jsonEncode(grpcConfig));
-  final bridge = buildXrayBridge(xray.nodes[1],
+  final bridge = buildXrayBridge(xray.nodes[2],
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xhttp-bridge.json').writeAsStringSync(jsonEncode(bridge.singbox));
   File('build/config-check/xhttp-xray.json').writeAsStringSync(jsonEncode(bridge.xray));
+  final autoBridge = buildXrayBridge(xray.nodes.first,
+      options: const SingboxConfigOptions(usePlatformDns: true));
+  File('build/config-check/auto-xray.json')
+      .writeAsStringSync(jsonEncode(autoBridge.xray));
+  File('build/config-check/auto-bridge.json')
+      .writeAsStringSync(jsonEncode(autoBridge.singbox));
   final hysteria = parseXrayTemplate(hysteriaXrayFixture)!;
   final hysteriaBridge = buildXrayBridge(hysteria.nodes.single,
       options: const SingboxConfigOptions(usePlatformDns: true));

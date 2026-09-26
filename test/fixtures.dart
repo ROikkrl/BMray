@@ -29,8 +29,11 @@ const xrayFixture = '''
       {"type":"field","ip":["10.0.0.0/8","geoip:private"],"outboundTag":"direct"},
       {"type":"field","balancerTag":"auto_wifi","network":"tcp,udp"}
     ],
-    "balancers":[{"tag":"auto_wifi","selector":["WIFI_"],"fallbackTag":"FALLBACK_"}]
+    "balancers":[{"tag":"auto_wifi","selector":["WIFI_"],
+      "strategy":{"type":"leastPing"},"fallbackTag":"FALLBACK_"}]
   },
+  "burstObservatory":{"subjectSelector":["WIFI_"],"pingConfig":{
+    "destination":"https://example.org/","interval":"15s","sampling":2,"timeout":"3s"}},
   "outbounds":[
     {"tag":"WIFI_","protocol":"vless","settings":{"vnext":[{"address":"vpn.example.com","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000001","flow":"xtls-rprx-vision"}]}]},
      "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"www.example.org","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","shortId":"0123456789abcdef","fingerprint":"qq"}}},
