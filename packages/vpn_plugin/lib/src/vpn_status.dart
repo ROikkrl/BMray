@@ -40,15 +40,20 @@ enum VpnState {
 class VpnStatus {
   final VpnState state;
   final String? message;
+  final DateTime? connectedAt;
 
-  const VpnStatus(this.state, {this.message});
+  const VpnStatus(this.state, {this.message, this.connectedAt});
 
   const VpnStatus.disconnected()
     : state = VpnState.disconnected,
-      message = null;
+      message = null,
+      connectedAt = null;
 
   factory VpnStatus.fromMap(Map<dynamic, dynamic> map) => VpnStatus(
     VpnState.parse(map['state'] as String?),
     message: map['message'] as String?,
+    connectedAt: map['connectedAtMillis'] is int
+        ? DateTime.fromMillisecondsSinceEpoch(map['connectedAtMillis'] as int)
+        : null,
   );
 }

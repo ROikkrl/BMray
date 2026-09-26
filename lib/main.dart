@@ -4,6 +4,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
@@ -53,14 +55,20 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final _vpn = SingboxVpn();
   final _store = SubscriptionStore();
+  static const _settingsStorage = FlutterSecureStorage();
+  static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
   StreamSubscription<VpnStatus>? _statusSubscription;
+  Timer? _uptimeTimer;
+  DateTime? _connectedAt;
   List<Subscription> _subscriptions = [];
+  final Set<String> _expandedSubscriptionIds = {};
   String? _subscriptionId;
   int _nodeIndex = 0;
   VpnStatus _status = const VpnStatus.disconnected();
   bool _busy = false;
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
+  int _proxyTimeoutSeconds = 4;
   // 0: servers, 1: settings, 2: ping, 3: information, 4: logs.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
@@ -87,21 +95,43 @@ class _HomePageState extends State<HomePage> {
     _statusSubscription = _vpn.statusStream().listen((status) {
       if (mounted)
         setState(() {
-          _status = status;
+          _setStatus(status);
           if (status.message != null) _error = status.message;
         });
     });
+    _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _status.state == VpnState.connected) setState(() {});
+    });
     _initialize();
+  }
+
+  void _setStatus(VpnStatus status) {
+    _status = status;
+    if (status.state == VpnState.connected) {
+      _connectedAt = status.connectedAt ?? _connectedAt ?? DateTime.now();
+    } else if (status.state == VpnState.disconnected ||
+        status.state == VpnState.error) {
+      _connectedAt = null;
+    }
   }
 
   Future<void> _initialize() async {
     try {
       final subscriptions = await _store.load();
       final status = await _vpn.currentStatus();
+      String? storedTimeout;
+      try {
+        storedTimeout = await _settingsStorage.read(key: _proxyTimeoutKey);
+      } catch (_) {
+        // Keep the default when a preference cannot be read.
+      }
       if (mounted)
         setState(() {
           _subscriptions = subscriptions;
-          _status = status;
+          _expandedSubscriptionIds.addAll(subscriptions.map((item) => item.id));
+          _setStatus(status);
+          final timeout = int.tryParse(storedTimeout ?? '');
+          if ([2, 4, 6, 10].contains(timeout)) _proxyTimeoutSeconds = timeout!;
           if (subscriptions.isNotEmpty) _nodeIndex = _firstUsableIndex(subscriptions.first);
         });
     } catch (_) {
@@ -113,8 +143,60 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _statusSubscription?.cancel();
+    _uptimeTimer?.cancel();
     super.dispose();
   }
+
+  Future<void> _showImportMenu() async {
+    final choice = await showModalBottomSheet<String>(context: context,
+      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(leading: const Icon(Icons.link_rounded),
+            title: const Text('Добавить ссылку или JSON'),
+            onTap: () => Navigator.pop(ctx, 'manual')),
+          ListTile(leading: const Icon(Icons.content_paste_rounded),
+            title: const Text('Импортировать из буфера обмена'),
+            onTap: () => Navigator.pop(ctx, 'clipboard')),
+          ListTile(leading: const Icon(Icons.qr_code_scanner_rounded),
+            title: const Text('Сканировать QR'),
+            onTap: () => Navigator.pop(ctx, 'qr')),
+        ],
+      )),
+    );
+    if (!mounted) return;
+    switch (choice) {
+      case 'manual':
+        await _add();
+        break;
+      case 'clipboard':
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        if (!mounted) return;
+        final input = data?.text?.trim() ?? '';
+        if (input.isEmpty) {
+          setState(() => _error = 'Буфер обмена пуст.');
+        } else {
+          await _importInput('', input);
+        }
+        break;
+      case 'qr':
+        final input = await Navigator.push<String>(context,
+          MaterialPageRoute(builder: (_) => const _QrScanPage()));
+        if (mounted && input != null) await _importInput('', input);
+        break;
+    }
+  }
+
+  Future<void> _importInput(String name, String input) => _perform(() async {
+    final item = await _store.import(name, input);
+    final next = [..._subscriptions, item];
+    await _store.save(next);
+    if (mounted) setState(() {
+      _subscriptions = next;
+      _subscriptionId = item.id;
+      _nodeIndex = _firstUsableIndex(item);
+      _expandedSubscriptionIds.add(item.id);
+    });
+  });
 
   Future<void> _add() async {
     final name = TextEditingController();
@@ -162,16 +244,7 @@ class _HomePageState extends State<HomePage> {
     name.dispose();
     url.dispose();
     if (shouldImport != true) return;
-    await _perform(() async {
-      final item = await _store.import(newName, newUrl);
-      final next = [..._subscriptions, item];
-      await _store.save(next);
-      setState(() {
-        _subscriptions = next;
-        _subscriptionId = item.id;
-        _nodeIndex = _firstUsableIndex(item);
-      });
-    });
+    await _importInput(newName, newUrl);
   }
 
   Future<void> _perform(Future<void> Function() operation) async {
@@ -197,7 +270,15 @@ class _HomePageState extends State<HomePage> {
   Future<void> _toggle() async {
     final item = _selected;
     if (_status.state == VpnState.connected) {
-      await _perform(_vpn.stop);
+      setState(() => _setStatus(const VpnStatus(VpnState.disconnecting)));
+      await _perform(() async {
+        try {
+          await _vpn.stop();
+        } catch (_) {
+          if (mounted) setState(() => _setStatus(const VpnStatus(VpnState.connected)));
+          rethrow;
+        }
+      });
       return;
     }
     if (item == null || item.nodes.isEmpty || _status.state.isBusy) return;
@@ -226,12 +307,10 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _refresh() async {
-    final item = _selected;
-    if (item == null) return;
+  Future<void> _refresh(Subscription item) async {
     await _perform(() async {
       await _store.refresh(item);
-      _nodeIndex = _firstUsableIndex(item);
+      if (_selected?.id == item.id) _nodeIndex = _firstUsableIndex(item);
       _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
       _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
       await _store.save(_subscriptions);
@@ -281,6 +360,7 @@ class _HomePageState extends State<HomePage> {
         config['inbounds'] = <Object>[];
         try {
           final result = await _vpn.proxyGetDelay(jsonEncode(config),
+              timeout: Duration(seconds: _proxyTimeoutSeconds),
               xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
           return (delay: result.delay, reason: result.reason);
         } catch (_) {
@@ -333,9 +413,7 @@ class _HomePageState extends State<HomePage> {
           '[UUID скрыт]',
         );
 
-  Future<void> _remove() async {
-    final item = _selected;
-    if (item == null) return;
+  Future<void> _remove(Subscription item) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -355,14 +433,18 @@ class _HomePageState extends State<HomePage> {
     );
     if (confirmed != true) return;
     await _perform(() async {
+      final removedSelected = _selected?.id == item.id;
       if (_status.state.isActive) await _vpn.stop();
       final next = _subscriptions.where((e) => e.id != item.id).toList();
       await _store.save(next);
       if (mounted)
         setState(() {
           _subscriptions = next;
-          _subscriptionId = null;
-          _nodeIndex = 0;
+          _expandedSubscriptionIds.remove(item.id);
+          if (removedSelected) {
+            _subscriptionId = next.isEmpty ? null : next.first.id;
+            _nodeIndex = next.isEmpty ? 0 : _firstUsableIndex(next.first);
+          }
         });
     });
   }
@@ -412,7 +494,7 @@ class _HomePageState extends State<HomePage> {
         }),
         actions: [
           if (_pageIndex == 0) IconButton(
-            tooltip: 'Добавить подписку', onPressed: _busy ? null : _add,
+            tooltip: 'Добавить', onPressed: _busy ? null : _showImportMenu,
             icon: const Icon(Icons.add_circle_outline_rounded)),
         ],
       ),
@@ -438,68 +520,17 @@ class _HomePageState extends State<HomePage> {
                     style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)))),
             ),
             const SizedBox(height: 8),
-            Row(children: [
-              const Expanded(child: Text('Подписки', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
-              IconButton(tooltip: 'Обновить выбранную подписку',
-                onPressed: canChange && item != null && item.isRemote ? _refresh : null,
-                icon: const Icon(Icons.refresh_rounded)),
-              IconButton(tooltip: 'Удалить выбранную подписку',
-                onPressed: canChange && item != null ? _remove : null,
-                icon: const Icon(Icons.delete_outline_rounded)),
-            ]),
+            const Text('Подписки и серверы', style: TextStyle(
+              fontSize: 20, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
             if (_subscriptions.isEmpty)
               Card(child: Padding(padding: const EdgeInsets.all(18), child: Text(
                 'Нажмите +, чтобы добавить подписку или ссылку сервера.',
                 style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))))
-            else ...[
-              for (final subscription in _subscriptions) Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Card(child: InkWell(
-                  borderRadius: BorderRadius.circular(20),
-                  onTap: canChange ? () => setState(() {
-                    _subscriptionId = subscription.id;
-                    _nodeIndex = _firstUsableIndex(subscription);
-                  }) : null,
-                  child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
-                    Icon(subscription.id == item?.id ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                      color: subscription.id == item?.id ? const Color(0xFF91A4FF) : const Color(0xFF8491AA)),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(subscription.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600))),
-                    Text('${subscription.nodes.length}', style: const TextStyle(color: Color(0xFF9DAEC7))),
-                  ])),
-                )),
-              ),
-            ],
-            if (item != null) ...[
-              if (item.notice != null) Padding(
-                padding: const EdgeInsets.only(top: 14),
-                child: Card(child: Padding(padding: const EdgeInsets.all(14),
-                    child: Row(children: [
-                      const Icon(Icons.info_outline_rounded, size: 20),
-                      const SizedBox(width: 10),
-                      Expanded(child: Text(item.notice!, maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12))),
-                    ]))),
-              ),
-              const SizedBox(height: 18),
-              Row(children: [
-                const Expanded(child: Text('Серверы', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
-                TextButton.icon(
-                  onPressed: _pingBusy || _busy || item.nodes.isEmpty ? null :
-                      () => _ping(item, List.generate(item.nodes.length, (i) => i)),
-                  icon: _pingBusy ? const SizedBox(width: 18, height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.speed_rounded),
-                  label: const Text('Проверить все'),
-                ),
-              ]),
-              const SizedBox(height: 12),
-              for (var i = 0; i < item.nodes.length; i++) Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _nodeCard(item, i, canChange),
-              ),
-            ],
+            for (final subscription in _subscriptions) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _subscriptionCard(subscription, canChange),
+            ),
           ],
           )),
         ],
@@ -512,24 +543,21 @@ class _HomePageState extends State<HomePage> {
       bool isActive, bool isConnecting) {
     final node = item == null || item.nodes.isEmpty ? null
         : item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
-    final canToggle = !_busy && !_pingBusy &&
+    final canToggle = !_busy && (!_pingBusy || isActive) &&
         _status.state != VpnState.disconnecting &&
         _status.state != VpnState.reasserting && !isConnecting &&
         (isActive || (node != null && node['_unsupported_reason'] == null));
     return LayoutBuilder(builder: (context, constraints) {
-      final diameter = (constraints.maxHeight * 0.55).clamp(64.0, 144.0).toDouble();
+      final diameter = (constraints.maxHeight * 0.46).clamp(64.0, 144.0).toDouble();
       return Container(
         width: double.infinity,
-        decoration: const BoxDecoration(gradient: LinearGradient(
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-          colors: [Color(0xFF1D2260), Color(0xFF171B4D), Color(0xFF101827)],
-        )),
+        color: const Color(0xFF101827),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Semantics(
             button: true,
             label: isActive ? 'Отключить VPN' : 'Подключить VPN',
             child: Material(
-              color: isActive ? const Color(0xFF214E57) : const Color(0xFF333087),
+              color: const Color(0xFF1D2538),
               shape: CircleBorder(side: BorderSide(
                 color: isActive ? const Color(0xFF53E0C3) : const Color(0xFF7976F6),
                 width: 5,
@@ -552,6 +580,8 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 8),
           Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          if (isActive && _connectedAt != null) Text(_uptimeLabel(),
+            style: const TextStyle(fontSize: 13, color: Color(0xFF60DFC3))),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Text(node?['tag']?.toString() ??
                 (item?.name ?? 'Добавьте подписку, чтобы начать'),
@@ -560,6 +590,15 @@ class _HomePageState extends State<HomePage> {
         ]),
       );
     });
+  }
+
+  String _uptimeLabel() {
+    final elapsed = DateTime.now().difference(_connectedAt!);
+    final seconds = elapsed.isNegative ? 0 : elapsed.inSeconds;
+    final hours = (seconds ~/ 3600).toString().padLeft(2, '0');
+    final minutes = ((seconds % 3600) ~/ 60).toString().padLeft(2, '0');
+    final rest = (seconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$rest';
   }
 
   Widget _settingsView() => ListView(children: [
@@ -629,7 +668,30 @@ class _HomePageState extends State<HomePage> {
       const SizedBox(height: 12),
       const Text('Выбранный способ применяется к кнопкам проверки на экране серверов.',
         style: TextStyle(color: Color(0xFF9DAEC7))),
+      const SizedBox(height: 24),
+      const Text('Тайм-аут Proxy GET', style: TextStyle(
+        fontSize: 18, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      const Text('Время ожидания одного HTTPS-запроса. При неудаче проверка пробует следующий адрес.',
+        style: TextStyle(color: Color(0xFF9DAEC7))),
+      const SizedBox(height: 12),
+      Wrap(spacing: 8, children: [
+        for (final seconds in [2, 4, 6, 10]) ChoiceChip(
+          label: Text('$seconds с'),
+          selected: _proxyTimeoutSeconds == seconds,
+          onSelected: _pingBusy ? null : (_) => _setProxyTimeout(seconds),
+        ),
+      ]),
     ]);
+  }
+
+  Future<void> _setProxyTimeout(int seconds) async {
+    setState(() => _proxyTimeoutSeconds = seconds);
+    try {
+      await _settingsStorage.write(key: _proxyTimeoutKey, value: '$seconds');
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Не удалось сохранить тайм-аут пинга.');
+    }
   }
 
   Widget _informationView() => FutureBuilder<String>(
@@ -640,7 +702,7 @@ class _HomePageState extends State<HomePage> {
         const Text('Информация', style: TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
-        _infoTile('Приложение', 'BMray 0.1.9 (сборка 10)'),
+        _infoTile('Приложение', 'BMray 0.2.0 (сборка 11)'),
         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
             snapshot.data ?? 'Загрузка…'),
@@ -691,6 +753,59 @@ class _HomePageState extends State<HomePage> {
     },
   );
 
+  Widget _subscriptionCard(Subscription item, bool canChange) {
+    final expanded = _expandedSubscriptionIds.contains(item.id);
+    final host = item.isRemote ? Uri.tryParse(item.url)?.host : null;
+    final description = item.notice ??
+        (host != null && host.isNotEmpty ? host : 'Локальный профиль');
+    return Card(child: Column(children: [
+      InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => setState(() {
+          if (expanded) {
+            _expandedSubscriptionIds.remove(item.id);
+          } else {
+            _expandedSubscriptionIds.add(item.id);
+          }
+        }),
+        child: Padding(padding: const EdgeInsets.symmetric(
+          horizontal: 16, vertical: 16), child: Row(children: [
+          Expanded(child: Text(item.name, maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+          const SizedBox(width: 8),
+          Text('${item.nodes.length}', style: const TextStyle(
+            color: Color(0xFF9DAEC7))),
+          const SizedBox(width: 6),
+          Icon(expanded ? Icons.keyboard_arrow_up_rounded :
+            Icons.keyboard_arrow_down_rounded),
+        ])),
+      ),
+      if (expanded) ...[
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+          child: Row(children: [
+            Expanded(child: Text(description, maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: Color(0xFF9DAEC7)))),
+            IconButton(tooltip: 'Проверить все серверы',
+              onPressed: _pingBusy || _busy || item.nodes.isEmpty ? null :
+                () => _ping(item, List.generate(item.nodes.length, (i) => i)),
+              icon: const Icon(Icons.speed_rounded, size: 20)),
+            IconButton(tooltip: 'Обновить подписку',
+              onPressed: canChange && item.isRemote ? () => _refresh(item) : null,
+              icon: const Icon(Icons.refresh_rounded, size: 20)),
+            IconButton(tooltip: 'Удалить подписку',
+              onPressed: canChange ? () => _remove(item) : null,
+              icon: const Icon(Icons.delete_outline_rounded, size: 20)),
+          ])),
+        for (var i = 0; i < item.nodes.length; i++) Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+          child: _nodeCard(item, i, canChange),
+        ),
+      ],
+    ]));
+  }
+
   Widget _nodeCard(Subscription item, int index, bool canChange) {
     final selected = _selected?.id == item.id && _nodeIndex == index;
     final node = item.nodes[index];
@@ -707,7 +822,10 @@ class _HomePageState extends State<HomePage> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: canChange && unsupported == null ? () => setState(() => _nodeIndex = index) : null,
+        onTap: canChange && unsupported == null ? () => setState(() {
+          _subscriptionId = item.id;
+          _nodeIndex = index;
+        }) : null,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
           child: Row(children: [
@@ -741,4 +859,46 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
+}
+
+class _QrScanPage extends StatefulWidget {
+  const _QrScanPage();
+
+  @override
+  State<_QrScanPage> createState() => _QrScanPageState();
+}
+
+class _QrScanPageState extends State<_QrScanPage> {
+  final _controller = MobileScannerController(formats: [BarcodeFormat.qrCode]);
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Сканировать QR')),
+    body: Stack(children: [
+      MobileScanner(controller: _controller, onDetect: (capture) {
+        if (_handled) return;
+        for (final code in capture.barcodes) {
+          final value = code.rawValue?.trim();
+          if (value != null && value.isNotEmpty) {
+            _handled = true;
+            Navigator.pop(context, value);
+            return;
+          }
+        }
+      }),
+      const Align(alignment: Alignment.bottomCenter,
+        child: SafeArea(child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('Наведите камеру на QR-код подписки или сервера.',
+            textAlign: TextAlign.center),
+        ))),
+    ]),
+  );
 }

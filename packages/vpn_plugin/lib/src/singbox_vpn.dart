@@ -101,9 +101,11 @@ class SingboxVpn {
   }
 
   /// Real HTTP GET through the selected sing-box outbound; null on timeout/error.
-  Future<ProxyProbeResult> proxyGetDelay(String configJson, {String? xrayConfig}) async {
+  Future<ProxyProbeResult> proxyGetDelay(String configJson,
+      {String? xrayConfig, Duration timeout = const Duration(seconds: 4)}) async {
     final result = await _methods.invokeMapMethod<String, dynamic>(
       'probeProxyGet', {'config': configJson,
+        'timeoutMillis': timeout.inMilliseconds,
         if (xrayConfig != null) 'xrayConfig': xrayConfig},
     );
     return ProxyProbeResult(delay: result?['delay'] as int?,

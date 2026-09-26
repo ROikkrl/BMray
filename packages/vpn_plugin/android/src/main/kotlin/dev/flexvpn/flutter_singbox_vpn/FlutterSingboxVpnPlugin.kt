@@ -97,6 +97,7 @@ class FlutterSingboxVpnPlugin :
         val payload = HashMap<String, Any?>()
         payload["state"] = state
         if (message != null) payload["message"] = message
+        SingBoxVpnService.connectedAtMillis?.let { payload["connectedAtMillis"] = it }
         eventSink?.success(payload)
     }
 
@@ -111,7 +112,10 @@ class FlutterSingboxVpnPlugin :
                 result.success(null)
             }
             "stop" -> { stopVpn(); result.success(null) }
-            "status" -> result.success(mapOf("state" to SingBoxVpnService.state))
+            "status" -> result.success(mapOf(
+                "state" to SingBoxVpnService.state,
+                "connectedAtMillis" to SingBoxVpnService.connectedAtMillis,
+            ))
             "coreVersion" -> {
                 val v = try { Libbox.version() } catch (e: Exception) { "?" }
                 result.success("sing-box $v")
@@ -126,6 +130,7 @@ class FlutterSingboxVpnPlugin :
             "probeProxyGet" -> {
                 val cfg = call.argument<String>("config") ?: ""
                 val xrayConfig = call.argument<String>("xrayConfig")
+                val timeoutMillis = (call.argument<Int>("timeoutMillis") ?: 4000).coerceIn(1000, 15000)
                 probes.execute {
                     var bridge: BoxPlatformInterface? = null
                     var sidecar: XraySidecar? = null
@@ -156,6 +161,7 @@ class FlutterSingboxVpnPlugin :
                             "https://www.gstatic.com/generate_204\n" +
                                 "https://cp.cloudflare.com/generate_204\n" +
                                 "https://max.ru/",
+                            timeoutMillis,
                             bridge,
                         )
                         mainHandler.post { result.success(mapOf("delay" to delay)) }

@@ -37,6 +37,9 @@ class SingBoxVpnService : VpnService() {
         var stateMessage: String? = null
             private set
 
+        @Volatile var connectedAtMillis: Long? = null
+            private set
+
         /// Set by MainActivity to forward status (state, message) to Flutter.
         var statusListener: ((String, String?) -> Unit)? = null
     }
@@ -51,6 +54,7 @@ class SingBoxVpnService : VpnService() {
 
     @Volatile
     private var stopping = false
+    @Volatile private var lastStartId = 0
 
     private val boxTempDir: File get() = File(cacheDir, "box").apply { mkdirs() }
 
@@ -60,12 +64,18 @@ class SingBoxVpnService : VpnService() {
     }
 
     private fun setState(value: String, message: String? = null) {
+        if (value == "connected" && state != "connected") {
+            connectedAtMillis = System.currentTimeMillis()
+        } else if (value == "disconnected" || value == "error") {
+            connectedAtMillis = null
+        }
         state = value
         stateMessage = message
         statusListener?.invoke(value, message)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         // A null intent means a sticky redelivery — do NOT silently resurrect a
         // VPN the user never re-armed.
         if (intent == null) {
@@ -86,16 +96,15 @@ class SingBoxVpnService : VpnService() {
             return START_NOT_STICKY
         }
         worker.execute {
-            if (!stopping) {
-                try {
-                    startBox(config, xrayConfig)
-                } catch (e: Exception) {
-                    writeExtLog("startTunnel FAILED: ${e.message}")
-                    setState("error", e.message)
-                    teardownBox()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+            stopping = false
+            try {
+                startBox(config, xrayConfig)
+            } catch (e: Exception) {
+                writeExtLog("startTunnel FAILED: ${e.message}")
+                setState("error", e.message)
+                teardownBox()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelfResult(startId)
             }
         }
         return START_NOT_STICKY
@@ -159,13 +168,16 @@ class SingBoxVpnService : VpnService() {
     fun stopTunnel() {
         if (stopping) return
         stopping = true
+        val stopStartId = lastStartId
+        setState("disconnecting")
         // Tear down off the main thread (closeService/close + settle delay).
         worker.execute {
             teardownBox()
             try { File(filesDir, "config.json").delete() } catch (_: Exception) {}
-            if (state != "error") setState("disconnected")
+            setState("disconnected")
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            // A newer ACTION_START must keep this service alive for its queued start.
+            stopSelfResult(stopStartId)
         }
     }
 
@@ -174,11 +186,11 @@ class SingBoxVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        current = null
+        if (current === this) current = null
         stopping = true
         worker.execute {
             teardownBox()
-            if (state != "error") setState("disconnected")
+            if (current == null && state != "error") setState("disconnected")
         }
         worker.shutdown()
         super.onDestroy()

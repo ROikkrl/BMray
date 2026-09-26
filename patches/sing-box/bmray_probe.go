@@ -17,7 +17,11 @@ import (
 // ProbeProxyGET starts an isolated core without a TUN and checks URLs with GET
 // through the requested outbound. A positive value is the elapsed time in ms.
 // No URL, host, credentials, or response body are returned to the UI.
-func ProbeProxyGET(configContent string, link string, platform PlatformInterface) (int32, error) {
+func ProbeProxyGET(configContent string, link string, timeoutMillis int32, platform PlatformInterface) (int32, error) {
+	if timeoutMillis < 1000 || timeoutMillis > 15000 {
+		timeoutMillis = 4000
+	}
+	requestTimeout := time.Duration(timeoutMillis) * time.Millisecond
 	ctx := baseContext(platform)
 	if platform != nil {
 		wrapper := &platformInterfaceWrapper{iif: platform, useProcFS: platform.UseProcFS()}
@@ -30,7 +34,7 @@ func ProbeProxyGET(configContent string, link string, platform PlatformInterface
 	if len(options.Inbounds) != 0 {
 		return 0, &probeConfigError{}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 3*requestTimeout+3*time.Second)
 	defer cancel()
 	instance, err := box.New(box.Options{Context: ctx, Options: options})
 	if err != nil {
@@ -47,16 +51,16 @@ func ProbeProxyGET(configContent string, link string, platform PlatformInterface
 	dial := func(ctx context.Context, network string, address string) (net.Conn, error) {
 		return outbound.DialContext(ctx, "tcp", M.ParseSocksaddr(address))
 	}
-	return probeTargets(ctx, link, dial)
+	return probeTargets(ctx, link, requestTimeout, dial)
 }
 
-func probeTargets(ctx context.Context, link string, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
+func probeTargets(ctx context.Context, link string, timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
 	var lastErr error
 	for _, target := range strings.Split(link, "\n") {
 		if target == "" {
 			continue
 		}
-		delay, err := probeGET(ctx, target, dial)
+		delay, err := probeGET(ctx, target, timeout, dial)
 		if err == nil {
 			return delay, nil
 		}
@@ -68,14 +72,14 @@ func probeTargets(ctx context.Context, link string, dial func(context.Context, s
 	return 0, lastErr
 }
 
-func probeGET(ctx context.Context, link string, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
+func probeGET(ctx context.Context, link string, timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) (int32, error) {
 	transport := &http.Transport{
 		DisableKeepAlives: true,
 		TLSClientConfig:   &tls.Config{RootCAs: adapter.RootPoolFromContext(ctx)},
 		DialContext:       dial,
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 4 * time.Second,
+	client := &http.Client{Transport: transport, Timeout: timeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
