@@ -59,6 +59,9 @@ class _HomePageState extends State<HomePage> {
   static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
   StreamSubscription<VpnStatus>? _statusSubscription;
   Timer? _uptimeTimer;
+  Timer? _subscriptionTimer;
+  bool _autoRefreshing = false;
+  final Map<String, DateTime> _autoRetryAfter = {};
   DateTime? _connectedAt;
   List<Subscription> _subscriptions = [];
   final Set<String> _expandedSubscriptionIds = {};
@@ -102,6 +105,8 @@ class _HomePageState extends State<HomePage> {
     _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _status.state == VpnState.connected) setState(() {});
     });
+    _subscriptionTimer = Timer.periodic(const Duration(minutes: 1),
+        (_) => _refreshDueSubscriptions());
     _initialize();
   }
 
@@ -134,6 +139,7 @@ class _HomePageState extends State<HomePage> {
           if ([2, 4, 6, 10].contains(timeout)) _proxyTimeoutSeconds = timeout!;
           if (subscriptions.isNotEmpty) _nodeIndex = _firstUsableIndex(subscriptions.first);
         });
+      if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
       if (mounted)
         setState(() => _error = 'Не удалось открыть защищённое хранилище.');
@@ -144,6 +150,7 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _statusSubscription?.cancel();
     _uptimeTimer?.cancel();
+    _subscriptionTimer?.cancel();
     super.dispose();
   }
 
@@ -188,7 +195,9 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _importInput(String name, String input) => _perform(() async {
     final item = await _store.import(name, input);
-    final next = [..._subscriptions, item];
+    final next = [..._subscriptions];
+    next.insert(next.indexWhere((existing) => !existing.pinned) < 0
+        ? next.length : next.indexWhere((existing) => !existing.pinned), item);
     await _store.save(next);
     if (mounted) setState(() {
       _subscriptions = next;
@@ -309,14 +318,78 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _refresh(Subscription item) async {
     await _perform(() async {
-      await _store.refresh(item);
-      if (_selected?.id == item.id) _nodeIndex = _firstUsableIndex(item);
-      _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
-      _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
-      await _store.save(_subscriptions);
-      if (mounted) setState(() {});
+      await _refreshSubscription(item);
     });
   }
+
+  Future<void> _refreshSubscription(Subscription item) async {
+    final selected = _selected?.id == item.id && item.nodes.isNotEmpty
+        ? item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)] : null;
+    await _store.refresh(item);
+    if (selected != null) {
+      final match = item.nodes.indexWhere((node) =>
+          node['tag'] == selected['tag'] && node['server'] == selected['server']);
+      _nodeIndex = match < 0 ? _firstUsableIndex(item) : match;
+    }
+    _latencies.removeWhere((key, _) => key.startsWith('${item.id}:'));
+    _pingErrors.removeWhere((key, _) => key.startsWith('${item.id}:'));
+    await _store.save(_subscriptions);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _refreshDueSubscriptions() async {
+    if (!mounted || _busy || _autoRefreshing) return;
+    _autoRefreshing = true;
+    try {
+      for (final item in List<Subscription>.of(_subscriptions)) {
+        if (!mounted || _busy) break;
+        final hours = item.updateHours;
+        if (!item.isRemote || (hours == null && item.lastUpdatedAt != null)) continue;
+        final now = DateTime.now();
+        if ((hours != null && item.lastUpdatedAt != null &&
+                now.isBefore(item.lastUpdatedAt!.add(Duration(hours: hours)))) ||
+            now.isBefore(_autoRetryAfter[item.id] ?? DateTime.fromMillisecondsSinceEpoch(0))) {
+          continue;
+        }
+        try {
+          await _refreshSubscription(item);
+          _autoRetryAfter.remove(item.id);
+        } catch (_) {
+          _autoRetryAfter[item.id] = DateTime.now().add(const Duration(minutes: 15));
+        }
+      }
+    } finally {
+      _autoRefreshing = false;
+    }
+  }
+
+  Future<void> _moveSubscription(Subscription item, int direction) => _perform(() async {
+    final index = _subscriptions.indexWhere((entry) => entry.id == item.id);
+    final target = index + direction;
+    if (target < 0 || target >= _subscriptions.length ||
+        _subscriptions[target].pinned != item.pinned) return;
+    final next = [..._subscriptions];
+    next[index] = next[target];
+    next[target] = item;
+    await _store.save(next);
+    if (mounted) setState(() => _subscriptions = next);
+  });
+
+  Future<void> _toggleSubscriptionPin(Subscription item) => _perform(() async {
+    final next = _subscriptions.where((entry) => entry.id != item.id).toList();
+    final pinned = !item.pinned;
+    final index = pinned ? 0 : next.indexWhere((entry) => !entry.pinned);
+    final insertion = index < 0 ? next.length : index;
+    item.pinned = pinned;
+    next.insert(insertion, item);
+    try {
+      await _store.save(next);
+    } catch (_) {
+      item.pinned = !pinned;
+      rethrow;
+    }
+    if (mounted) setState(() => _subscriptions = next);
+  });
 
   String _delayKey(Subscription item, int index) =>
       '${item.id}:$index:${_pingMethod.name}';
@@ -455,7 +528,7 @@ class _HomePageState extends State<HomePage> {
     final isActive = _status.state == VpnState.connected;
     final isConnecting = _status.state == VpnState.connecting;
     final canChange =
-        !_busy && !_status.state.isActive && !_status.state.isBusy;
+        !_busy && !_autoRefreshing && !_status.state.isActive && !_status.state.isBusy;
     final label = switch (_status.state) {
       VpnState.connected => 'Подключено',
       VpnState.connecting => 'Подключение…',
@@ -494,7 +567,7 @@ class _HomePageState extends State<HomePage> {
         }),
         actions: [
           if (_pageIndex == 0) IconButton(
-            tooltip: 'Добавить', onPressed: _busy ? null : _showImportMenu,
+            tooltip: 'Добавить', onPressed: _busy || _autoRefreshing ? null : _showImportMenu,
             icon: const Icon(Icons.add_circle_outline_rounded)),
         ],
       ),
@@ -758,45 +831,90 @@ class _HomePageState extends State<HomePage> {
     final host = item.isRemote ? Uri.tryParse(item.url)?.host : null;
     final description = item.notice ??
         (host != null && host.isNotEmpty ? host : 'Локальный профиль');
+    final index = _subscriptions.indexOf(item);
+    final lastUpdated = item.lastUpdatedAt == null ? 'Не обновлялась' :
+        _formatSubscriptionDate(item.lastUpdatedAt!);
+    final updateText = item.updateHours == null ? 'Автообновление выкл.' :
+        'Автообновление — ${item.updateHours} ч.';
     return Card(child: Column(children: [
-      InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: () => setState(() {
-          if (expanded) {
-            _expandedSubscriptionIds.remove(item.id);
-          } else {
-            _expandedSubscriptionIds.add(item.id);
-          }
-        }),
-        child: Padding(padding: const EdgeInsets.symmetric(
-          horizontal: 16, vertical: 16), child: Row(children: [
-          Expanded(child: Text(item.name, maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
-          const SizedBox(width: 8),
-          Text('${item.nodes.length}', style: const TextStyle(
-            color: Color(0xFF9DAEC7))),
-          const SizedBox(width: 6),
-          Icon(expanded ? Icons.keyboard_arrow_up_rounded :
-            Icons.keyboard_arrow_down_rounded),
+      Padding(padding: const EdgeInsets.fromLTRB(8, 8, 2, 4),
+        child: Row(children: [
+          IconButton(tooltip: expanded ? 'Свернуть' : 'Развернуть',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => setState(() {
+              if (expanded) {
+                _expandedSubscriptionIds.remove(item.id);
+              } else {
+                _expandedSubscriptionIds.add(item.id);
+              }
+            }),
+            icon: Icon(expanded ? Icons.keyboard_arrow_down_rounded :
+                Icons.keyboard_arrow_right_rounded)),
+          Expanded(child: InkWell(onTap: () => setState(() {
+            if (expanded) {
+              _expandedSubscriptionIds.remove(item.id);
+            } else {
+              _expandedSubscriptionIds.add(item.id);
+            }
+          }), child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(item.name, maxLines: 1, softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              Text('$lastUpdated | $updateText', maxLines: 1,
+                softWrap: false, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
+            ]))),
+          IconButton(tooltip: item.pinned ? 'Открепить' : 'Закрепить',
+            onPressed: _busy || _autoRefreshing ? null : () => _toggleSubscriptionPin(item),
+            icon: Icon(item.pinned ? Icons.push_pin_rounded :
+                Icons.push_pin_outlined, size: 19)),
+          PopupMenuButton<String>(tooltip: 'Действия с подпиской',
+            onSelected: (action) {
+              switch (action) {
+                case 'up': _moveSubscription(item, -1); break;
+                case 'down': _moveSubscription(item, 1); break;
+                case 'remove': _remove(item); break;
+              }
+            }, itemBuilder: (_) => [
+              PopupMenuItem(value: 'up', enabled: !_busy && !_autoRefreshing && index > 0 &&
+                  _subscriptions[index - 1].pinned == item.pinned,
+                child: const Text('Переместить вверх')),
+              PopupMenuItem(value: 'down', enabled: !_busy && !_autoRefreshing &&
+                  index < _subscriptions.length - 1 &&
+                  _subscriptions[index + 1].pinned == item.pinned,
+                child: const Text('Переместить вниз')),
+              PopupMenuItem(value: 'remove', enabled: canChange,
+                child: const Text('Удалить')),
+            ]),
         ])),
-      ),
       if (expanded) ...[
+        if (item.announcement != null)
+          Padding(padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+            child: Align(alignment: Alignment.centerLeft,
+              child: SelectableText(item.announcement!,
+                style: const TextStyle(fontSize: 13)))),
+        if (item.traffic != null)
+          Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Align(alignment: Alignment.centerLeft,
+              child: Text('Израсходовано: ${_formatTraffic(item.traffic!.used)} / '
+                  '${_formatTraffic(item.traffic!.total)}',
+                style: const TextStyle(fontSize: 12,
+                  color: Color(0xFF9DAEC7))))),
         Padding(padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
           child: Row(children: [
             Expanded(child: Text(description, maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, color: Color(0xFF9DAEC7)))),
             IconButton(tooltip: 'Проверить все серверы',
-              onPressed: _pingBusy || _busy || item.nodes.isEmpty ? null :
+              onPressed: _pingBusy || _busy || _autoRefreshing || item.nodes.isEmpty ? null :
                 () => _ping(item, List.generate(item.nodes.length, (i) => i)),
               icon: const Icon(Icons.speed_rounded, size: 20)),
             IconButton(tooltip: 'Обновить подписку',
               onPressed: canChange && item.isRemote ? () => _refresh(item) : null,
               icon: const Icon(Icons.refresh_rounded, size: 20)),
-            IconButton(tooltip: 'Удалить подписку',
-              onPressed: canChange ? () => _remove(item) : null,
-              icon: const Icon(Icons.delete_outline_rounded, size: 20)),
+            Text('${item.nodes.length}', style: const TextStyle(
+              color: Color(0xFF9DAEC7))),
           ])),
         for (var i = 0; i < item.nodes.length; i++) Padding(
           padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
@@ -804,6 +922,25 @@ class _HomePageState extends State<HomePage> {
         ),
       ],
     ]));
+  }
+
+  String _formatSubscriptionDate(DateTime date) {
+    final local = date.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${two(local.day)}.${two(local.month)}.${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  String _formatTraffic(int? bytes) {
+    if (bytes == null) return '—';
+    const labels = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+    var size = bytes.toDouble();
+    var unit = 0;
+    while (size >= 1024 && unit < labels.length - 1) {
+      size /= 1024;
+      unit++;
+    }
+    return '${unit == 0 ? bytes : size.toStringAsFixed(2)} ${labels[unit]}';
   }
 
   Widget _nodeCard(Subscription item, int index, bool canChange) {

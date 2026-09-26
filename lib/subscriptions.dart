@@ -6,6 +6,7 @@ import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'clash_subscription.dart';
 import 'subscription_title.dart';
+import 'subscription_metadata.dart';
 import 'xray_subscription.dart';
 
 class Subscription {
@@ -17,6 +18,11 @@ class Subscription {
     this.customName = false,
     this.notice,
     this.directRules = const [],
+    this.announcement,
+    this.traffic,
+    this.updateHours,
+    this.lastUpdatedAt,
+    this.pinned = false,
   });
 
   final String id;
@@ -26,6 +32,11 @@ class Subscription {
   bool customName;
   String? notice;
   List<Map<String, dynamic>> directRules;
+  String? announcement;
+  SubscriptionTraffic? traffic;
+  int? updateHours;
+  DateTime? lastUpdatedAt;
+  bool pinned;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
@@ -45,6 +56,12 @@ class Subscription {
     notice: value['notice'] as String?,
     directRules: (value['directRules'] as List? ?? [])
         .map((rule) => Map<String, dynamic>.from(rule as Map)).toList(),
+    announcement: value['announcement'] as String?,
+    traffic: value['traffic'] is Map ? SubscriptionTraffic.fromJson(
+        Map<String, dynamic>.from(value['traffic'] as Map)) : null,
+    updateHours: value['updateHours'] as int?,
+    lastUpdatedAt: DateTime.tryParse(value['lastUpdatedAt'] as String? ?? ''),
+    pinned: value['pinned'] as bool? ?? false,
     );
   }
 
@@ -56,6 +73,11 @@ class Subscription {
     'customName': customName,
     'notice': notice,
     'directRules': directRules,
+    'announcement': announcement,
+    'traffic': traffic?.toJson(),
+    'updateHours': updateHours,
+    'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
+    'pinned': pinned,
   };
 }
 
@@ -145,6 +167,10 @@ class SubscriptionStore {
       directRules: parsed.directRules,
       notice: parsed.notice,
       customName: name.trim().isNotEmpty,
+      announcement: subscriptionAnnouncement(downloaded.announce),
+      traffic: SubscriptionTraffic.fromHeader(downloaded.userInfo),
+      updateHours: subscriptionUpdateHours(downloaded.updateInterval),
+      lastUpdatedAt: DateTime.now(),
     );
   }
 
@@ -163,6 +189,10 @@ class SubscriptionStore {
     item.nodes = parsed.nodes;
     item.notice = parsed.notice;
     item.directRules = parsed.directRules;
+    item.announcement = subscriptionAnnouncement(downloaded.announce);
+    item.traffic = SubscriptionTraffic.fromHeader(downloaded.userInfo);
+    item.updateHours = subscriptionUpdateHours(downloaded.updateInterval);
+    item.lastUpdatedAt = DateTime.now();
     if (!item.customName) {
       item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
     }
@@ -196,7 +226,8 @@ class SubscriptionStore {
     }
   }
 
-  Future<({String body, String? title})> _download(Uri initial) async {
+  Future<({String body, String? title, String? announce,
+      String? userInfo, String? updateInterval})> _download(Uri initial) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     try {
@@ -240,7 +271,10 @@ class SubscriptionStore {
             );
           }
         }
-        return (body: utf8.decode(bytes), title: response.headers.value('profile-title'));
+        return (body: utf8.decode(bytes), title: response.headers.value('profile-title'),
+            announce: response.headers.value('announce'),
+            userInfo: response.headers.value('subscription-userinfo'),
+            updateInterval: response.headers.value('profile-update-interval'));
       }
       throw const FormatException('Слишком много переадресаций подписки.');
     } finally {
