@@ -11,14 +11,15 @@ class XrayBridge {
 }
 
 bool usesXray(Map<String, dynamic> node) =>
-    node['type'] == 'vless' && node['transport'] is Map &&
-    (node['transport'] as Map)['type'] == 'xhttp';
+    (node['type'] == 'hysteria2' && node['_xray_outbound'] is Map) ||
+    (node['type'] == 'vless' && node['transport'] is Map &&
+    (node['transport'] as Map)['type'] == 'xhttp');
 
 XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   bool probe = false,
   SingboxConfigOptions options = const SingboxConfigOptions(),
 }) {
-  if (!usesXray(node)) throw const FormatException('Ожидался VLESS XHTTP');
+  if (!usesXray(node)) throw const FormatException('Ожидался профиль Xray');
   final random = Random.secure();
   final port = 20000 + random.nextInt(35000);
   final user = 'bmray';

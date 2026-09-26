@@ -8,6 +8,7 @@ import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
 import 'xray_bridge.dart';
+import 'node_label.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -206,7 +207,7 @@ class _HomePageState extends State<HomePage> {
               options: const SingboxConfigOptions(usePlatformDns: true))
           : null;
       if (usesXray(node) && bridge == null) {
-        throw const FormatException('XHTTP доступен в Android версии приложения.');
+        throw const FormatException('Этот профиль Xray доступен только на Android.');
       }
       final config = bridge?.singbox ?? buildSingboxConfig(node,
           options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
@@ -267,7 +268,7 @@ class _HomePageState extends State<HomePage> {
           return (delay: null, reason: node['_unsupported_reason'].toString());
         }
         if (usesXray(node) && !Platform.isAndroid) {
-          return (delay: null, reason: 'XHTTP доступен только на Android');
+          return (delay: null, reason: 'Этот профиль Xray доступен только на Android');
         }
         final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
             options: const SingboxConfigOptions(usePlatformDns: true)) : null;
@@ -416,7 +417,12 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF101827),
-        title: const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
+        title: Row(mainAxisSize: MainAxisSize.min, children: [
+          ClipRRect(borderRadius: BorderRadius.circular(7),
+            child: Image.asset('assets/brand/logo.jpg', width: 34, height: 34)),
+          const SizedBox(width: 10),
+          const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
+        ]),
         actions: [
           IconButton(tooltip: 'Журнал', onPressed: _showLogs,
               icon: const Icon(Icons.receipt_long_outlined)),
@@ -574,7 +580,7 @@ class _HomePageState extends State<HomePage> {
               Text(node['tag']?.toString() ?? 'Сервер ${index + 1}',
                 maxLines: 2, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w600)),
-              Text(node['type']?.toString().toUpperCase() ?? 'ПРОКСИ',
+              Text(nodeLabel(node),
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
               if (unsupported != null) Text(unsupported,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),

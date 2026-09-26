@@ -6,6 +6,19 @@ const realityLink =
     '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123456789abcdef'
     '#%F0%9F%87%AA%F0%9F%87%AA%20Test';
 
+const hysteriaXrayFixture = '''
+{
+  "remarks":"Латвия (Hysteria2)",
+  "outbounds":[{
+    "tag":"Латвия (Hysteria2)", "protocol":"hysteria",
+    "settings":{"version":2,"address":"vpn.example.com","port":443},
+    "streamSettings":{"network":"hysteria","security":"tls",
+      "hysteriaSettings":{"version":2},
+      "tlsSettings":{"serverName":"vpn.example.com","alpn":["h3"]}}
+  }]
+}
+''';
+
 // A synthetic Xray template; never commit a customer configuration.
 const xrayFixture = '''
 {

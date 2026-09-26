@@ -28,6 +28,25 @@ XrayTemplate? parseXrayTemplate(String content) {
   final unsupported = <String>{};
   for (final entry in root['outbounds'] as List) {
     if (entry is! Map) continue;
+    if (entry['protocol'] == 'hysteria') {
+      final opts = entry['settings'];
+      final stream = entry['streamSettings'];
+      final address = opts is Map ? opts['address']?.toString() : null;
+      final port = opts is Map ? int.tryParse('${opts['port']}') : null;
+      if (opts is Map && opts['version'] == 2 && stream is Map &&
+          address != null && address.isNotEmpty &&
+          port != null && port >= 1 && port <= 65535) {
+        nodes.add({
+          'type': 'hysteria2',
+          'tag': entry['tag']?.toString() ?? '$address:$port',
+          'server': address,
+          'server_port': port,
+          'transport': {'type': stream['network']?.toString() ?? 'hysteria'},
+          '_xray_outbound': Map<String, dynamic>.from(entry),
+        });
+      }
+      continue;
+    }
     if (entry['protocol'] != 'vless') {
       if (entry['protocol'] != 'freedom' && entry['protocol'] != 'blackhole') {
         unsupported.add(entry['protocol']?.toString() ?? 'unknown');

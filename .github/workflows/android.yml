@@ -63,7 +63,9 @@ jobs:
       - name: Test REALITY and HTTPS against Xray 26.9.9
         run: bash scripts/test_reality.sh
       - name: Validate XHTTP Xray config
-        run: build/reality-test/xray run -test -config build/config-check/xhttp-xray.json
+        run: |
+          build/reality-test/xray run -test -config build/config-check/xhttp-xray.json
+          build/reality-test/xray run -test -config build/config-check/hysteria-xray.json
       - name: Test proxy GET through sing-box outbound
         run: (cd build/sing-box && go test -tags with_utls -run TestBMrayProbeProxyGET ./experimental/libbox)
       - uses: actions/cache@v4

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:bmray/xray_subscription.dart';
 import 'package:bmray/xray_bridge.dart';
+import 'package:bmray/node_label.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 import 'fixtures.dart';
@@ -45,5 +46,26 @@ void main() {
     expect(stream['xhttpSettings']['path'], '/segment.ts');
     expect(stream['xhttpSettings']['extra']['uplinkHTTPMethod'], 'GET');
     expect(stream['realitySettings']['shortId'], '0123456789abcdef');
+  });
+
+  test('Xray Hysteria2 JSON is preserved for the Android core', () {
+    final template = parseXrayTemplate(hysteriaXrayFixture)!;
+    expect(template.nodes, hasLength(1));
+    final node = template.nodes.single;
+    expect(usesXray(node), isTrue);
+    expect(nodeLabel(node), 'HYSTERIA2 / HYSTERIA / TLS');
+    final bridge = buildXrayBridge(node);
+    expect(bridge.xray['outbounds'][0]['protocol'], 'hysteria');
+    expect(bridge.xray['outbounds'][0]['streamSettings']['hysteriaSettings'],
+        {'version': 2});
+  });
+
+  test('server subtitles use imported transport and security', () {
+    final tcp = parseShareLink(realityLink)!;
+    expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');
+    final xhttp = parseShareLink(
+        realityLink.replaceFirst('type=tcp', 'type=xhttp'),
+        includeUnsupported: true)!;
+    expect(nodeLabel(xhttp), 'VLESS / XHTTP / REALITY');
   });
 }

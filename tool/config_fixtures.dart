@@ -29,4 +29,9 @@ void main() {
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xhttp-bridge.json').writeAsStringSync(jsonEncode(bridge.singbox));
   File('build/config-check/xhttp-xray.json').writeAsStringSync(jsonEncode(bridge.xray));
+  final hysteria = parseXrayTemplate(hysteriaXrayFixture)!;
+  final hysteriaBridge = buildXrayBridge(hysteria.nodes.single,
+      options: const SingboxConfigOptions(usePlatformDns: true));
+  File('build/config-check/hysteria-xray.json')
+      .writeAsStringSync(jsonEncode(hysteriaBridge.xray));
 }
