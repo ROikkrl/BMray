@@ -1,8 +1,52 @@
 diff --git a/lib/main.dart b/lib/main.dart
-index 3f76aa1..470de5e 100644
+index 3f76aa1..d48f7f6 100644
 --- a/lib/main.dart
 +++ b/lib/main.dart
-@@ -483,7 +483,20 @@ class _HomePageState extends State<HomePage> {
+@@ -459,22 +459,37 @@ class _HomePageState extends State<HomePage> {
+     }
+   }
+ 
++  String _formatSource(String source) {
++    try {
++      return const JsonEncoder.withIndent('  ').convert(jsonDecode(source));
++    } on FormatException {
++      return source;
++    }
++  }
++
+   void _showSubscriptionJson(Subscription item) {
+-    final source = item.rawJson;
++    final source = item.rawResponse;
++    final decoded = source == null ? null : decodedSubscriptionResponse(source);
+     Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
+         JsonConfigPage(title: item.name, tabs: [
+           JsonConfigTab('Ответ подписки', source == null
+-              ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+-              : _formatJson(source)),
++              ? 'Исходный ответ ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
++              : _formatSource(source)),
++          if (decoded != null)
++            JsonConfigTab('Декодировано', _formatSource(decoded)),
+         ])));
+   }
+ 
+   void _showNodeJson(Subscription item, int index) {
+     final node = item.nodes[index];
++    final source = item.rawResponse;
++    final decoded = source == null ? null : decodedSubscriptionResponse(source);
+     final tabs = <JsonConfigTab>[
+-      JsonConfigTab('Ответ подписки', item.rawJson == null
+-          ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+-          : _formatJson(item.rawJson)),
++      JsonConfigTab('Ответ подписки', source == null
++          ? 'Исходный ответ ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
++          : _formatSource(source)),
++      if (decoded != null)
++        JsonConfigTab('Декодировано', _formatSource(decoded)),
+       JsonConfigTab('Импортированный узел', _formatJson(node)),
+     ];
+     final key = _delayKey(item, index);
+@@ -483,7 +498,20 @@ class _HomePageState extends State<HomePage> {
        'proxyTimeoutSeconds': _proxyTimeoutSeconds,
        'lastLatencyMs': _latencies[key],
        'lastError': _pingErrors[key],
@@ -23,6 +67,123 @@ index 3f76aa1..470de5e 100644
      try {
        if (usesXray(node)) {
          final bridge = buildXrayBridge(node,
+@@ -1164,7 +1192,7 @@ class _HomePageState extends State<HomePage> {
+               }
+             }, itemBuilder: (_) => [
+               const PopupMenuItem(value: 'json',
+-                child: Text('Исходный JSON подписки')),
++                child: Text('Ответ подписки')),
+               PopupMenuItem(value: 'up', enabled: !_busy && !_autoRefreshing && index > 0 &&
+                   _subscriptions[index - 1].pinned == item.pinned,
+                 child: const Text('Переместить вверх')),
+diff --git a/lib/subscriptions.dart b/lib/subscriptions.dart
+index 6b6e26f..5a6f788 100644
+--- a/lib/subscriptions.dart
++++ b/lib/subscriptions.dart
+@@ -24,7 +24,7 @@ class Subscription {
+     this.updateHours,
+     this.lastUpdatedAt,
+     this.pinned = false,
+-    this.rawJson,
++    this.rawResponse,
+   });
+ 
+   final String id;
+@@ -39,7 +39,7 @@ class Subscription {
+   int? updateHours;
+   DateTime? lastUpdatedAt;
+   bool pinned;
+-  String? rawJson;
++  String? rawResponse;
+ 
+   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
+ 
+@@ -65,7 +65,7 @@ class Subscription {
+     updateHours: value['updateHours'] as int?,
+     lastUpdatedAt: DateTime.tryParse(value['lastUpdatedAt'] as String? ?? ''),
+     pinned: value['pinned'] as bool? ?? false,
+-    rawJson: value['rawJson'] as String?,
++    rawResponse: value['rawResponse'] as String? ?? value['rawJson'] as String?,
+     );
+   }
+ 
+@@ -82,7 +82,7 @@ class Subscription {
+     'updateHours': updateHours,
+     'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
+     'pinned': pinned,
+-    'rawJson': rawJson,
++    'rawResponse': rawResponse,
+   };
+ }
+ 
+@@ -125,7 +125,7 @@ class SubscriptionStore {
+         directRules: template?.directRules ?? parsed!.directRules,
+         notice: template?.notice ?? parsed?.notice,
+         customName: name.trim().isNotEmpty,
+-        rawJson: _jsonPayload(input),
++        rawResponse: input,
+       );
+     }
+     final normalized = Uri.tryParse(input);
+@@ -154,6 +154,7 @@ class SubscriptionStore {
+         url: input,
+         nodes: [node],
+         notice: node['_unsupported_reason']?.toString(),
++        rawResponse: input,
+       );
+     }
+     if (normalized == null ||
+@@ -185,7 +186,7 @@ class SubscriptionStore {
+       traffic: SubscriptionTraffic.fromHeader(downloaded.userInfo),
+       updateHours: subscriptionUpdateHours(downloaded.updateInterval),
+       lastUpdatedAt: DateTime.now(),
+-      rawJson: _jsonPayload(downloaded.body),
++      rawResponse: downloaded.body,
+     );
+   }
+ 
+@@ -208,7 +209,7 @@ class SubscriptionStore {
+     item.traffic = SubscriptionTraffic.fromHeader(downloaded.userInfo);
+     item.updateHours = subscriptionUpdateHours(downloaded.updateInterval);
+     item.lastUpdatedAt = DateTime.now();
+-    item.rawJson = _jsonPayload(downloaded.body);
++    item.rawResponse = downloaded.body;
+     if (!item.customName) {
+       item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
+     }
+@@ -339,22 +340,18 @@ class SubscriptionStore {
+   }
+ }
+ 
+-/// Preserve JSON responses for local inspection. Decode Base64-wrapped JSON.
+-String? _jsonPayload(String body) {
+-  var text = body.trim();
+-  if (!text.startsWith('{') && !text.startsWith('[') &&
+-      !text.contains('://')) {
+-    try {
+-      text = utf8.decode(base64.decode(base64.normalize(text))).trim();
+-    } on FormatException {
+-      return null;
+-    }
++/// Gives the inspector a readable second view for Base64 subscriptions.
++String? decodedSubscriptionResponse(String body) {
++  final text = body.trim();
++  if (text.startsWith('{') || text.startsWith('[') || text.contains('://')) {
++    return null;
+   }
+-  if (!text.startsWith('{') && !text.startsWith('[')) return null;
+   try {
+-    final parsed = jsonDecode(text);
+-    return parsed is Map || parsed is List ? text : null;
++    final decoded = utf8.decode(base64.decode(base64.normalize(text))).trim();
++    if (decoded.startsWith('{') || decoded.startsWith('[') ||
++        decoded.contains('://')) return decoded;
+   } on FormatException {
+-    return null;
++    // Plain text responses are displayed without a decoded tab.
+   }
++  return null;
+ }
 diff --git a/lib/xray_bridge.dart b/lib/xray_bridge.dart
 index 4cd6868..fc64774 100644
 --- a/lib/xray_bridge.dart
@@ -89,7 +250,7 @@ index 59fe4ab..3716779 100644
  environment:
    sdk: '>=3.12.0 <4.0.0'
 diff --git a/test/xray_template_test.dart b/test/xray_template_test.dart
-index 7430615..28bc1eb 100644
+index 7430615..66f00b2 100644
 --- a/test/xray_template_test.dart
 +++ b/test/xray_template_test.dart
 @@ -72,6 +72,18 @@ void main() {
@@ -111,3 +272,27 @@ index 7430615..28bc1eb 100644
    test('Xray Hysteria2 JSON is preserved for the Android core', () {
      final template = parseXrayTemplate(hysteriaXrayFixture)!;
      expect(template.nodes, hasLength(1));
+@@ -128,12 +140,21 @@ void main() {
+ 
+   test('Imported template retains the original JSON across storage serialization', () async {
+     final imported = await SubscriptionStore().import('', xrayFixture);
+-    expect(jsonDecode(imported.rawJson!), jsonDecode(xrayFixture));
++    expect(jsonDecode(imported.rawResponse!), jsonDecode(xrayFixture));
+     final restored = Subscription.fromJson(imported.toJson());
+-    expect(restored.rawJson, imported.rawJson);
++    expect(restored.rawResponse, imported.rawResponse);
+     expect(restored.nodes.first['_xray_template'], isNotNull);
+   });
+ 
++  test('Base64 link subscription can be inspected without losing its response', () {
++    final body = base64Encode(utf8.encode('$realityLink\n$realityLink'));
++    final subscription = Subscription(id: 'test', name: 'Test',
++        url: 'https://example.com/sub', nodes: [], rawResponse: body);
++    final restored = Subscription.fromJson(subscription.toJson());
++    expect(restored.rawResponse, body);
++    expect(decodedSubscriptionResponse(body), '$realityLink\n$realityLink');
++  });
++
+   test('server subtitles use imported transport and security', () {
+     final tcp = parseShareLink(realityLink)!;
+     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');
