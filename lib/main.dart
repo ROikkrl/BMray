@@ -352,7 +352,7 @@ class _HomePageState extends State<HomePage> {
       }
       final config = bridge?.singbox ?? buildSingboxConfig(node,
           options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
-      if (item.directRules.isNotEmpty) {
+      if (item.directRules.isNotEmpty && node['type'] != 'auto') {
         (config['route']['rules'] as List).addAll(item.directRules);
       }
       final configJson = jsonEncode(config);
@@ -446,6 +446,68 @@ class _HomePageState extends State<HomePage> {
   String _delayKey(Subscription item, int index) =>
       '${item.id}:$index:${_pingMethod.name}';
 
+  Future<({int? delay, String? reason})> _probeAutoProxy(
+      Map<String, dynamic> node) async {
+    final template = node['_xray_template'];
+    if (template is! Map || template['outbounds'] is! List ||
+        template['routing'] is! Map) {
+      return (delay: null, reason: 'Автовыбор: нет серверов');
+    }
+    final routing = template['routing'] as Map;
+    final balancers = routing['balancers'];
+    if (balancers is! List || balancers.isEmpty || balancers.first is! Map) {
+      return (delay: null, reason: 'Автовыбор: нет балансировщика');
+    }
+    final balancer = balancers.first as Map;
+    final selectors = balancer['selector'] is List
+        ? (balancer['selector'] as List).map((item) => item.toString()).toList()
+        : <String>[];
+    final tags = (template['outbounds'] as List)
+        .whereType<Map>()
+        .map((item) => item['tag']?.toString() ?? '')
+        .where((tag) => selectors.any((prefix) => tag.startsWith(prefix)))
+        .toList();
+    final fallback = balancer['fallbackTag']?.toString();
+    final available = (template['outbounds'] as List)
+        .whereType<Map>().any((item) => item['tag'] == fallback);
+    int? fastest;
+    String? lastError;
+    for (final tag in tags) {
+      try {
+        final bridge = buildXrayBridge(node, probe: true,
+            probeOutboundTag: tag,
+            options: const SingboxConfigOptions(usePlatformDns: true));
+        final result = await _vpn.proxyGetDelay(jsonEncode(bridge.singbox),
+            timeout: Duration(seconds: _proxyTimeoutSeconds),
+            xrayConfig: jsonEncode(bridge.xray));
+        if (result.delay != null &&
+            (fastest == null || result.delay! < fastest)) {
+          fastest = result.delay;
+        }
+        lastError = result.reason ?? lastError;
+      } catch (_) {
+        lastError = 'Ошибка проверки прокси';
+      }
+    }
+    if (fastest == null && available && fallback != null &&
+        !tags.contains(fallback)) {
+      try {
+        final bridge = buildXrayBridge(node, probe: true,
+            probeOutboundTag: fallback,
+            options: const SingboxConfigOptions(usePlatformDns: true));
+        final result = await _vpn.proxyGetDelay(jsonEncode(bridge.singbox),
+            timeout: Duration(seconds: _proxyTimeoutSeconds),
+            xrayConfig: jsonEncode(bridge.xray));
+        fastest = result.delay;
+        lastError = result.reason ?? lastError;
+      } catch (_) {
+        lastError = 'Ошибка проверки резервного сервера';
+      }
+    }
+    return (delay: fastest,
+        reason: fastest == null ? lastError ?? 'Автовыбор: нет ответа' : null);
+  }
+
   Future<({int? delay, String? reason})> _probe(Map<String, dynamic> node) async {
     if (node['type'] == 'auto' && _pingMethod != PingMethod.proxyGet) {
       final template = node['_xray_template'];
@@ -503,6 +565,7 @@ class _HomePageState extends State<HomePage> {
         if (usesXray(node) && !Platform.isAndroid) {
           return (delay: null, reason: 'Этот профиль Xray доступен только на Android');
         }
+        if (node['type'] == 'auto') return _probeAutoProxy(node);
         final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
             options: const SingboxConfigOptions(usePlatformDns: true)) : null;
         final config = bridge?.singbox ?? buildSingboxConfig(node,

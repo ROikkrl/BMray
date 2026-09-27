@@ -15,8 +15,8 @@ XrayTemplate? parseXrayTemplate(String content) {
   try {
     final decoded = jsonDecode(content);
     if (decoded is Map && decoded['outbounds'] is List &&
-        (decoded['routing'] is Map ||
-            (decoded['outbounds'] as List).any((o) => o is Map && o['protocol'] != null))) {
+        (decoded['outbounds'] as List).any(
+            (o) => o is Map && o['protocol'] != null)) {
       root = decoded;
     }
   } on FormatException {
@@ -28,23 +28,33 @@ XrayTemplate? parseXrayTemplate(String content) {
   final unsupported = <String>{};
   for (final entry in root['outbounds'] as List) {
     if (entry is! Map) continue;
-    if (entry['protocol'] == 'hysteria') {
+    if (entry['protocol'] == 'hysteria' || entry['protocol'] == 'hysteria2') {
       final opts = entry['settings'];
       final stream = entry['streamSettings'];
       final address = opts is Map ? opts['address']?.toString() : null;
       final port = opts is Map ? int.tryParse('${opts['port']}') : null;
-      if (opts is Map && opts['version'] == 2 && stream is Map &&
-          address != null && address.isNotEmpty &&
-          port != null && port >= 1 && port <= 65535) {
-        nodes.add({
-          'type': 'hysteria2',
-          'tag': entry['tag']?.toString() ?? '$address:$port',
-          'server': address,
-          'server_port': port,
-          'transport': {'type': stream['network']?.toString() ?? 'hysteria'},
-          '_xray_outbound': Map<String, dynamic>.from(entry),
-        });
-      }
+      final transport = stream is Map ? stream['hysteriaSettings'] : null;
+      final version = opts is Map ? int.tryParse('${opts['version']}') : null;
+      final transportVersion = transport is Map
+          ? int.tryParse('${transport['version']}') : null;
+      final validEndpoint = address != null && address.isNotEmpty &&
+          port != null && port >= 1 && port <= 65535;
+      nodes.add({
+        'type': 'hysteria2',
+        'tag': entry['tag']?.toString() ??
+            (validEndpoint ? '$address:$port' : 'Hysteria2'),
+        'server': address ?? '',
+        'server_port': port ?? 0,
+        'transport': {'type': stream is Map
+            ? stream['network']?.toString() ?? 'hysteria' : 'hysteria'},
+        if (validEndpoint && version == 2 && stream is Map &&
+            transportVersion == 2)
+          '_xray_outbound': Map<String, dynamic>.from(entry)
+            ..['protocol'] = 'hysteria'
+        else
+          '_unsupported_reason': 'Hysteria2: в подписке нет корректных '
+              'address/port или version=2 в settings и hysteriaSettings',
+      });
       continue;
     }
     if (entry['protocol'] != 'vless') {
@@ -187,9 +197,38 @@ XrayTemplate? parseXrayTemplate(String content) {
       final target = vnext is List && vnext.isNotEmpty ? vnext.first : null;
       final address = target is Map ? target['address']?.toString() : null;
       final port = target is Map ? int.tryParse('${target['port']}') : null;
+      final supportingTags = <String>{};
+      if (candidate['fallbackTag'] is String) {
+        supportingTags.add(candidate['fallbackTag'] as String);
+      }
+      if (routing['rules'] is List) {
+        for (final rule in routing['rules'] as List) {
+          if (rule is Map && rule['outboundTag'] is String) {
+            supportingTags.add(rule['outboundTag'] as String);
+          }
+        }
+      }
+      for (final outbound in root['outbounds'] as List) {
+        if (outbound is Map && supportingTags.contains(outbound['tag']) &&
+            !matched.any((item) => item['tag'] == outbound['tag'])) {
+          matched.add(Map<String, dynamic>.from(outbound));
+        }
+      }
+      final selectedBalancer = Map<String, dynamic>.from(candidate);
+      if (!matched.any((item) => item['tag'] == selectedBalancer['fallbackTag'])) {
+        selectedBalancer.remove('fallbackTag');
+      }
       final config = <String, dynamic>{
         'outbounds': matched,
-        'routing': {'balancers': [Map<String, dynamic>.from(candidate)]},
+        'routing': {
+          'balancers': [selectedBalancer],
+          if (routing['rules'] is List) 'rules': routing['rules'],
+          if (routing['domainStrategy'] != null)
+            'domainStrategy': routing['domainStrategy'],
+          if (routing['domainMatcher'] != null)
+            'domainMatcher': routing['domainMatcher'],
+        },
+        if (root['dns'] is Map) 'dns': root['dns'],
         if (root['burstObservatory'] is Map)
           'burstObservatory': root['burstObservatory'],
         if (root['observatory'] is Map) 'observatory': root['observatory'],

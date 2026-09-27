@@ -18,6 +18,7 @@ bool usesXray(Map<String, dynamic> node) =>
 
 XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   bool probe = false,
+  String? probeOutboundTag,
   SingboxConfigOptions options = const SingboxConfigOptions(),
 }) {
   if (!usesXray(node)) throw const FormatException('Ожидался профиль Xray');
@@ -51,22 +52,25 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   }
   final xray = <String, dynamic>{
     'log': {'loglevel': 'warning'},
+    if (template is Map && template['dns'] is Map)
+      'dns': template['dns'],
     'inbounds': [{
       'tag': 'local-socks', 'listen': '127.0.0.1', 'port': port,
       'protocol': 'socks',
       'settings': {'auth': 'password', 'users': [{'user': user, 'pass': password}], 'udp': true},
+      'sniffing': {'enabled': true, 'routeOnly': true,
+        'destOverride': ['http', 'tls', 'quic']},
     }],
     'outbounds': templateOutbounds ?? [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
-    if (template is Map) 'routing': {
-      'rules': [{
-        'type': 'field', 'network': 'tcp,udp',
-        'balancerTag': (template['routing'] as Map)['balancers'][0]['tag'],
-      }],
-      'balancers': (template['routing'] as Map)['balancers'],
-    },
-    if (template is Map && template['burstObservatory'] is Map)
+    if (template is Map) 'routing': probeOutboundTag == null
+        ? _autoRouting(template)
+        : {'rules': [{'type': 'field', 'network': 'tcp,udp',
+            'outboundTag': probeOutboundTag}]},
+    if (template is Map && probeOutboundTag == null &&
+        template['burstObservatory'] is Map)
       'burstObservatory': template['burstObservatory'],
-    if (template is Map && template['observatory'] is Map)
+    if (template is Map && probeOutboundTag == null &&
+        template['observatory'] is Map)
       'observatory': template['observatory'],
   };
   final socks = <String, dynamic>{
@@ -79,6 +83,66 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   (singbox['route'] as Map)['auto_detect_interface'] = false;
   if (probe) singbox['inbounds'] = <Object>[];
   return XrayBridge(singbox, xray);
+}
+
+Map<String, dynamic> _autoRouting(Map template) {
+  final source = template['routing'] as Map;
+  final balancers = source['balancers'] as List;
+  final tag = (balancers.first as Map)['tag'];
+  final available = (template['outbounds'] as List)
+      .whereType<Map>().map((item) => item['tag']).toSet();
+  final rules = <Map<String, dynamic>>[];
+  if (source['rules'] is List) {
+    for (final original in source['rules'] as List) {
+      if (original is! Map || original['type'] != 'field') continue;
+      if (original['outboundTag'] != null &&
+          !available.contains(original['outboundTag'])) continue;
+      if (original['balancerTag'] != null && original['balancerTag'] != tag) continue;
+      final inboundTags = original['inboundTag'];
+      if (inboundTags is List &&
+          !inboundTags.any((value) => value == 'socks' ||
+              value == 'http' || value == 'local-socks')) continue;
+      final rule = Map<String, dynamic>.from(original)..remove('inboundTag');
+      if (rule['domain'] is List) {
+        final domains = (rule['domain'] as List).where((value) =>
+            !value.toString().startsWith('geosite:')).toList();
+        if (domains.isEmpty) rule.remove('domain');
+        else rule['domain'] = domains;
+      }
+      if (rule['ip'] is List) {
+        final ips = <String>[];
+        for (final value in rule['ip'] as List) {
+          if (value == 'geoip:private') {
+            ips.addAll(['10.0.0.0/8', '172.16.0.0/12',
+              '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16',
+              'fc00::/7', 'fe80::/10', '::1/128']);
+          } else if (!value.toString().startsWith('geoip:')) {
+            ips.add(value.toString());
+          }
+        }
+        if (ips.isEmpty) rule.remove('ip');
+        else rule['ip'] = ips;
+      }
+      // A geo-only rule must not turn into an unconditional direct rule.
+      if (!rule.containsKey('domain') && !rule.containsKey('ip') &&
+          !rule.containsKey('network') && !rule.containsKey('port') &&
+          !rule.containsKey('protocol')) continue;
+      rules.add(rule);
+    }
+  }
+  // SOCKS traffic must always have a route, even for older stored templates.
+  if (!rules.any((rule) => rule['balancerTag'] == tag &&
+      rule['network'] == 'tcp,udp')) {
+    rules.add({'type': 'field', 'network': 'tcp,udp', 'balancerTag': tag});
+  }
+  return {
+    'rules': rules,
+    'balancers': balancers,
+    if (source['domainStrategy'] != null)
+      'domainStrategy': source['domainStrategy'],
+    if (source['domainMatcher'] != null)
+      'domainMatcher': source['domainMatcher'],
+  };
 }
 
 Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {

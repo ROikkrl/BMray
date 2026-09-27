@@ -36,6 +36,17 @@ Map<String, dynamic>? parseShareLink(String link, {bool includeUnsupported = fal
       case 'hysteria2':
       case 'hy2':
         return _parseHysteria2(trimmed);
+      case 'hysteria':
+        final parts = _parseUriStyle(trimmed, 'hysteria');
+        if (parts == null) return null;
+        if (parts.params['version'] == '2') {
+          return _parseHysteria2('hysteria2://${trimmed.substring('hysteria://'.length)}');
+        }
+        return includeUnsupported ? {
+          'type': 'hysteria2', 'tag': _tagFor(parts),
+          'server': parts.host, 'server_port': parts.port,
+          '_unsupported_reason': 'Hysteria: ссылка без version=2; требуется Hysteria2',
+        } : null;
       case 'tuic':
         return _parseTuic(trimmed);
       default:

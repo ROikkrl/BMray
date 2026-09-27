@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:bmray/xray_subscription.dart';
 import 'package:bmray/xray_bridge.dart';
 import 'package:bmray/node_label.dart';
+import 'package:bmray/subscriptions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 import 'fixtures.dart';
@@ -14,27 +15,41 @@ void main() {
   test('Xray template preserves XHTTP outbound without turning it into TCP', () {
     final profile = parseXrayTemplate(xrayFixture)!;
     expect(profile.name, 'Польша - АвтоБС');
-    expect(profile.nodes, hasLength(4));
+    expect(profile.nodes, hasLength(5));
     final auto = profile.nodes.first;
     expect(auto['type'], 'auto');
     expect(usesXray(auto), true);
-    final autoBridge = buildXrayBridge(auto, probe: true);
-    expect(autoBridge.xray['routing']['rules'][0]['balancerTag'], 'auto_wifi');
+    final autoBridge = buildXrayBridge(auto);
+    expect(autoBridge.xray['routing']['rules'].last['balancerTag'], 'auto_wifi');
     expect(autoBridge.xray['routing']['balancers'][0]['strategy']['type'], 'leastPing');
     expect(autoBridge.xray['burstObservatory']['subjectSelector'], ['WIFI_']);
-    expect(autoBridge.xray['outbounds'], hasLength(2));
+    expect(autoBridge.xray['outbounds'], hasLength(4));
+    expect((autoBridge.xray['outbounds'] as List)
+        .map((outbound) => outbound['tag']),
+        containsAll(['WIFI_', 'WIFI_-2', 'FALLBACK_', 'direct']));
+    final rules = autoBridge.xray['routing']['rules'] as List;
+    expect(rules.first['outboundTag'], 'direct');
+    expect(rules.first['domain'], isNot(contains('geosite:category-test')));
+    expect(rules[1]['ip'], contains('10.0.0.0/8'));
+    expect(rules.last['balancerTag'], 'auto_wifi');
+    expect(autoBridge.xray['inbounds'][0]['sniffing']['enabled'], true);
+    final probeBridge = buildXrayBridge(auto, probe: true,
+        probeOutboundTag: 'WIFI_-2');
+    expect(probeBridge.xray['routing']['rules'], hasLength(1));
+    expect(probeBridge.xray['routing']['rules'][0]['outboundTag'], 'WIFI_-2');
+    expect(probeBridge.xray.containsKey('burstObservatory'), false);
     expect(autoBridge.xray['inbounds'][0]['protocol'], 'socks');
-    expect(autoBridge.singbox['inbounds'], isEmpty);
+    expect(probeBridge.singbox['inbounds'], isEmpty);
     final node = profile.nodes[1];
     expect(node['tag'], 'WIFI_');
     expect(node['tls']['utls']['fingerprint'], 'qq');
     expect(node['tls']['reality']['short_id'], '0123456789abcdef');
-    expect(profile.nodes[2]['tag'], 'FALLBACK_');
-    expect(usesXray(profile.nodes[2]), isTrue);
-    final bridge = buildXrayBridge(profile.nodes[2]);
+    expect(profile.nodes[3]['tag'], 'FALLBACK_');
+    expect(usesXray(profile.nodes[3]), isTrue);
+    final bridge = buildXrayBridge(profile.nodes[3]);
     expect(bridge.xray['outbounds'][0]['streamSettings']['network'], 'xhttp');
     expect(bridge.singbox['outbounds'][0]['type'], 'socks');
-    expect(profile.nodes[3]['transport'], {'type': 'grpc', 'service_name': 'service'});
+    expect(profile.nodes[4]['transport'], {'type': 'grpc', 'service_name': 'service'});
     expect(profile.directRules, isNotEmpty);
     final config = buildSingboxConfig(node);
     (config['route']['rules'] as List).addAll(profile.directRules);
@@ -67,6 +82,31 @@ void main() {
     expect(bridge.xray['outbounds'][0]['protocol'], 'hysteria');
     expect(bridge.xray['outbounds'][0]['streamSettings']['hysteriaSettings'],
         {'version': 2});
+  });
+
+  test('Incomplete Hysteria stays visible instead of disappearing', () {
+    final incomplete = hysteriaXrayFixture.replaceFirst('"version":2,"address"',
+        '"version":1,"address"');
+    final nodes = parseXrayTemplate(incomplete)!.nodes;
+    expect(nodes, hasLength(1));
+    expect(nodes.single['tag'], 'Латвия (Hysteria2)');
+    expect(nodes.single['_unsupported_reason'], contains('version=2'));
+  });
+
+  test('Hysteria version 2 share link is imported', () {
+    final node = parseShareLink(
+        'hysteria://password@vpn.example.com:443?version=2&sni=example.org#Test');
+    expect(node?['type'], 'hysteria2');
+    expect(node?['password'], 'password');
+  });
+
+  test('Raw Xray outbound array keeps Hysteria in the subscription', () async {
+    final raw = jsonDecode(hysteriaXrayFixture) as Map;
+    final subscription = await SubscriptionStore()
+        .import('', jsonEncode(raw['outbounds']));
+    expect(subscription.nodes, hasLength(1));
+    expect(subscription.nodes.single['type'], 'hysteria2');
+    expect(usesXray(subscription.nodes.single), true);
   });
 
   test('server subtitles use imported transport and security', () {

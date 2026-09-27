@@ -22,10 +22,10 @@ void main() {
       options: const SingboxConfigOptions(usePlatformDns: true));
   (config['route']['rules'] as List).addAll(xray.directRules);
   File('build/config-check/xray.json').writeAsStringSync(jsonEncode(config));
-  final grpcConfig = buildSingboxConfig(xray.nodes[3],
+  final grpcConfig = buildSingboxConfig(xray.nodes[4],
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xray-grpc.json').writeAsStringSync(jsonEncode(grpcConfig));
-  final bridge = buildXrayBridge(xray.nodes[2],
+  final bridge = buildXrayBridge(xray.nodes[3],
       options: const SingboxConfigOptions(usePlatformDns: true));
   File('build/config-check/xhttp-bridge.json').writeAsStringSync(jsonEncode(bridge.singbox));
   File('build/config-check/xhttp-xray.json').writeAsStringSync(jsonEncode(bridge.xray));

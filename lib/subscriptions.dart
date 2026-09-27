@@ -102,20 +102,25 @@ class SubscriptionStore {
 
   Future<Subscription> import(String name, String url) async {
     final input = url.trim();
-    if (input.startsWith('{')) {
-      final template = parseXrayTemplate(input);
-      if (template == null) {
+    if (input.startsWith('{') || input.startsWith('[')) {
+      final template = input.startsWith('{') ? parseXrayTemplate(input) : null;
+      final parsed = template == null && input.startsWith('[')
+          ? _parse(input) : null;
+      if (template == null && parsed == null) {
         throw const FormatException('Не удалось разобрать Xray JSON.');
       }
-      if (template.nodes.isEmpty) {
-        throw FormatException(template.notice ??
+      final nodes = template?.nodes ?? parsed!.nodes;
+      if (nodes.isEmpty) {
+        throw FormatException(template?.notice ?? parsed?.notice ??
             'В Xray JSON нет клиентских серверов с адресом и учётными данными.');
       }
       return Subscription(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: name.trim().isEmpty ? template.name ?? 'Xray JSON' : name.trim(),
-        url: input, nodes: template.nodes, directRules: template.directRules,
-        notice: template.notice, customName: name.trim().isNotEmpty,
+        name: name.trim().isEmpty ? template?.name ?? 'Xray JSON' : name.trim(),
+        url: input, nodes: nodes,
+        directRules: template?.directRules ?? parsed!.directRules,
+        notice: template?.notice ?? parsed?.notice,
+        customName: name.trim().isNotEmpty,
       );
     }
     final normalized = Uri.tryParse(input);
@@ -125,6 +130,7 @@ class SubscriptionStore {
       'trojan',
       'ss',
       'hysteria2',
+      'hysteria',
       'hy2',
       'tuic',
     };
@@ -224,7 +230,9 @@ class SubscriptionStore {
           final notices = <String>[];
           for (final entry in entries) {
             if (entry is! Map) continue;
-            final profile = parseXrayTemplate(jsonEncode(entry));
+            final profile = parseXrayTemplate(jsonEncode(
+                entry['protocol'] != null && entry['outbounds'] == null
+                    ? {'outbounds': [entry]} : entry));
             if (profile == null) continue;
             nodes.addAll(profile.nodes);
             directRules.addAll(profile.directRules);
