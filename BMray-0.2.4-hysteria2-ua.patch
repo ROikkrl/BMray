@@ -1,0 +1,169 @@
+diff --git a/lib/main.dart b/lib/main.dart
+index 8ee32bb..5d3f1d7 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+ import 'package:mobile_scanner/mobile_scanner.dart';
++import 'package:package_info_plus/package_info_plus.dart';
+ import 'package:vpn_plugin/vpn_plugin.dart';
+ 
+ import 'subscriptions.dart';
+@@ -81,6 +82,8 @@ class _HomePageState extends State<HomePage> {
+   // 0: servers, 1: settings, 2: ping, 3: information, 4: logs, 5: user agent.
+   int _pageIndex = 0;
+   late final Future<String> _coreVersion = _vpn.coreVersion();
++  late final Future<String> _appVersion = PackageInfo.fromPlatform().then(
++      (info) => 'BMray ${info.version} (сборка ${info.buildNumber})');
+   late Future<String> _logs = _vpn.readLogs();
+   final Map<String, int?> _latencies = {};
+   final Map<String, String> _pingErrors = {};
+@@ -954,7 +957,9 @@ class _HomePageState extends State<HomePage> {
+         const Text('Информация', style: TextStyle(
+           fontSize: 20, fontWeight: FontWeight.w700)),
+         const SizedBox(height: 12),
+-        _infoTile('Приложение', 'BMray 0.2.2 (сборка 13)'),
++        FutureBuilder<String>(future: _appVersion,
++          builder: (context, app) => _infoTile('Приложение',
++              app.data ?? (app.hasError ? 'Недоступно' : 'Загрузка…'))),
+         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
+         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
+             snapshot.data ?? 'Загрузка…'),
+diff --git a/lib/subscription_identity.dart b/lib/subscription_identity.dart
+index a3b0958..1031dff 100644
+--- a/lib/subscription_identity.dart
++++ b/lib/subscription_identity.dart
+@@ -3,6 +3,7 @@ import 'dart:math';
+ import 'dart:io';
+ 
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:package_info_plus/package_info_plus.dart';
+ 
+ class SubscriptionIdentity {
+   const SubscriptionIdentity(this.hwid, this.userAgent);
+@@ -10,10 +11,12 @@ class SubscriptionIdentity {
+   static const _storage = FlutterSecureStorage();
+   static const hwidKey = 'bmray.subscriptionHwid';
+   static const userAgentKey = 'bmray.subscriptionUserAgent';
+-  static const defaultUserAgent = 'BMray/0.2.2';
+   final String hwid;
+   final String userAgent;
+ 
++  static String defaultUserAgentFor(String platform, String version) =>
++      'BMray/$platform/$version';
++
+   static bool validHwid(String value) =>
+       RegExp(r'^[A-Za-z0-9=-]{10,64}$').hasMatch(value);
+ 
+@@ -29,9 +32,16 @@ class SubscriptionIdentity {
+       await _storage.write(key: hwidKey, value: hwid);
+     }
+     final savedAgent = await _storage.read(key: userAgentKey);
+-    return SubscriptionIdentity(hwid,
+-        savedAgent != null && validUserAgent(savedAgent)
+-            ? savedAgent : defaultUserAgent);
++    // Older versions saved their old default as if it were a custom value.
++    final legacyDefault = savedAgent != null &&
++        RegExp(r'^BMray/[0-9]+(?:\.[0-9]+)+$').hasMatch(savedAgent);
++    if (savedAgent != null && validUserAgent(savedAgent) && !legacyDefault) {
++      return SubscriptionIdentity(hwid, savedAgent);
++    }
++    final platform = Platform.isAndroid ? 'android'
++        : Platform.isIOS ? 'ios' : Platform.operatingSystem;
++    final version = (await PackageInfo.fromPlatform()).version;
++    return SubscriptionIdentity(hwid, defaultUserAgentFor(platform, version));
+   }
+ 
+   Future<void> save() async {
+diff --git a/packages/vpn_plugin/lib/src/share_link_parser.dart b/packages/vpn_plugin/lib/src/share_link_parser.dart
+index 5ed3ee4..d3906cf 100644
+--- a/packages/vpn_plugin/lib/src/share_link_parser.dart
++++ b/packages/vpn_plugin/lib/src/share_link_parser.dart
+@@ -474,6 +474,12 @@ _UriParts? _parseUriStyle(String link, String scheme) {
+     hostPort = rest.substring(atIdx + 1);
+   }
+ 
++  // Standard URI serializers include a root path after the authority, e.g.
++  // hysteria2://password@vpn.example.com:443/?sni=vpn.example.com.
++  // It is not part of the port (and proxy paths live in query parameters).
++  final pathStart = hostPort.indexOf('/');
++  if (pathStart >= 0) hostPort = hostPort.substring(0, pathStart);
++
+   // Split host:port, accounting for IPv6 [..]:port.
+   String host;
+   int? port;
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 76df534..83c422d 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: bmray
+ description: BMray — клиент подписок sing-box для Android и iOS.
+ publish_to: none
+-version: 0.2.3+14
++version: 0.2.4+15
+ 
+ environment:
+   sdk: '>=3.12.0 <4.0.0'
+@@ -10,6 +10,7 @@ dependencies:
+   flutter:
+     sdk: flutter
+   flutter_secure_storage: 11.2.0
++  package_info_plus: 10.2.1
+   mobile_scanner: 7.4.2
+   yaml: 3.1.4
+   vpn_plugin:
+diff --git a/test/subscription_identity_test.dart b/test/subscription_identity_test.dart
+index 0bd0740..b7c45b9 100644
+--- a/test/subscription_identity_test.dart
++++ b/test/subscription_identity_test.dart
+@@ -10,11 +10,18 @@ void main() {
+   });
+ 
+   test('subscription requests identify BMray consistently', () {
+-    const identity = SubscriptionIdentity('BMray-0123456789', 'BMray/0.2.2');
++    const identity = SubscriptionIdentity('BMray-0123456789', 'BMray/android/0.2.4');
+     final headers = identity.requestHeaders;
+     expect(headers['x-hwid'], identity.hwid);
+-    expect(headers['user-agent'], 'BMray/0.2.2');
++    expect(headers['user-agent'], 'BMray/android/0.2.4');
+     expect(headers['cookie'], 'BMray=BMray-0123456789');
+     expect(SubscriptionIdentity.validUserAgent('BMray\r\nExtra: bad'), false);
+   });
++
++  test('default user agents include platform and installed version', () {
++    expect(SubscriptionIdentity.defaultUserAgentFor('android', '0.2.4'),
++        'BMray/android/0.2.4');
++    expect(SubscriptionIdentity.defaultUserAgentFor('ios', '0.2.4'),
++        'BMray/ios/0.2.4');
++  });
+ }
+diff --git a/test/xray_template_test.dart b/test/xray_template_test.dart
+index 3c767bc..16fd4ee 100644
+--- a/test/xray_template_test.dart
++++ b/test/xray_template_test.dart
+@@ -100,6 +100,23 @@ void main() {
+     expect(node?['password'], 'password');
+   });
+ 
++  test('Hysteria2 share link with slash after port imports and builds', () async {
++    const link = 'hysteria2://00000000-0000-4000-8000-000000000001@'
++        'lv.example.com:4443/?sni=lv.example.com#%F0%9F%87%B1%F0%9F%87%BB%20Latvia';
++    final node = parseShareLink(link, includeUnsupported: true)!;
++    expect(node['type'], 'hysteria2');
++    expect(node['server'], 'lv.example.com');
++    expect(node['server_port'], 4443);
++    expect(node['password'], '00000000-0000-4000-8000-000000000001');
++    expect(node['tls']['server_name'], 'lv.example.com');
++    expect(node['tag'], contains('Latvia'));
++    expect(buildSingboxConfig(node)['outbounds'][0]['type'], 'hysteria2');
++    expect(parseSubscription('$link\n$link'), hasLength(2));
++    final imported = await SubscriptionStore().import('', link);
++    expect(imported.nodes, hasLength(1));
++    expect(imported.nodes.single['server_port'], 4443);
++  });
++
+   test('Raw Xray outbound array keeps Hysteria in the subscription', () async {
+     final raw = jsonDecode(hysteriaXrayFixture) as Map;
+     final subscription = await SubscriptionStore()
