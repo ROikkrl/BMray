@@ -279,8 +279,16 @@ class SubscriptionStore {
             final profile = parseXrayTemplate(jsonEncode(
                 entry['protocol'] != null && entry['outbounds'] == null
                     ? {'outbounds': [entry]} : entry));
-            if (profile == null) continue;
-            nodes.addAll(profile.nodes);
+            if (profile == null || profile.nodes.isEmpty) continue;
+            // XRAY_JSON subscriptions contain one full configuration per item.
+            // Its outbounds are implementation details, not extra regions.
+            final selected = profile.nodes.firstWhere(
+                (node) => node['type'] == 'auto',
+                orElse: () => profile.nodes.first);
+            final node = Map<String, dynamic>.from(selected);
+            final remarks = entry['remarks']?.toString().trim();
+            if (remarks != null && remarks.isNotEmpty) node['tag'] = remarks;
+            nodes.add(node);
             directRules.addAll(profile.directRules);
             if (profile.notice != null) notices.add(profile.notice!);
           }

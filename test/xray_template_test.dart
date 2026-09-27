@@ -183,6 +183,28 @@ void main() {
     expect(usesXray(subscription.nodes.single), true);
   });
 
+  test('XRAY_JSON array shows one named region per config, including AutoBS', () async {
+    final ordinary = jsonDecode(xrayFixture) as Map<String, dynamic>;
+    ordinary.remove('routing');
+    ordinary.remove('burstObservatory');
+    ordinary['remarks'] = '🇪🇪 Эстония';
+    final imported = await SubscriptionStore().import('', jsonEncode([
+      ordinary,
+      jsonDecode(xrayFixture),
+      jsonDecode(hysteriaXrayFixture),
+    ]));
+    expect(imported.nodes, hasLength(3));
+    expect(imported.nodes.map((node) => node['tag']), [
+      '🇪🇪 Эстония', 'Польша - АвтоБС', 'Латвия (Hysteria2)',
+    ]);
+    expect(imported.nodes[1]['type'], 'auto');
+    expect((buildXrayBridge(imported.nodes[1]).xray['outbounds'] as List)
+        .map((outbound) => outbound['tag']),
+        containsAll(['WIFI_', 'WIFI_-2', 'FALLBACK_']));
+    expect(imported.nodes[2]['type'], 'hysteria2');
+    expect(usesXray(imported.nodes[2]), true);
+  });
+
   test('Imported template retains the original JSON across storage serialization', () async {
     final imported = await SubscriptionStore().import('', xrayFixture);
     expect(jsonDecode(imported.rawResponse!), jsonDecode(xrayFixture));

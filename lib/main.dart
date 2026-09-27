@@ -14,7 +14,6 @@ import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
 import 'json_config_page.dart';
-import 'remnawave_template.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -416,37 +415,6 @@ class _HomePageState extends State<HomePage> {
       });
       _rememberSelection();
     }
-  }
-
-  Future<void> _attachAutoTemplate(Subscription item, int index) async {
-    final input = TextEditingController(text: item.autoTemplates[
-        item.nodes[index]['tag']?.toString() ?? ''] ?? '');
-    final apply = await showDialog<bool>(context: context, builder: (ctx) =>
-      AlertDialog(
-        title: const Text('Шаблон АвтоБС'),
-        content: SizedBox(width: 560, child: SingleChildScrollView(child: Column(
-          mainAxisSize: MainAxisSize.min, children: [
-            const Text('Вставьте Xray JSON шаблон этого хоста из Remnawave. '
-                'В ответе подписки injectHosts отсутствует.'),
-            TextField(controller: input, maxLines: 12, minLines: 5,
-                decoration: const InputDecoration(hintText: '{ "remnawave": ... }')),
-          ],
-        ))),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Привязать')),
-        ],
-      ));
-    final raw = input.text;
-    input.dispose();
-    if (apply != true) return;
-    await _perform(() async {
-      _store.attachAutoTemplate(item, index, raw);
-      await _store.save(_subscriptions);
-      if (mounted) setState(() {});
-    });
   }
 
   Future<void> _refresh(Subscription item) async {
@@ -1498,18 +1466,11 @@ class _HomePageState extends State<HomePage> {
               maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
-            if (isLocalTemplateHost(node)) IconButton(
-              tooltip: 'Привязать Xray JSON шаблон АвтоБС',
-              onPressed: _busy || _status.state.isActive ? null
-                  : () => _attachAutoTemplate(item, index),
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.account_tree_outlined, size: 19),
-            ),
             IconButton(
-              tooltip: 'Просмотр JSON конфигурации',
+              tooltip: 'Просмотреть конфигурацию',
               onPressed: () => _showNodeJson(item, index),
               visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.data_object_rounded, size: 19),
+              icon: const Icon(Icons.article_outlined, size: 19),
             ),
             IconButton(
               tooltip: 'Проверить сервер',
