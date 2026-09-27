@@ -140,10 +140,19 @@ void main() {
 
   test('Imported template retains the original JSON across storage serialization', () async {
     final imported = await SubscriptionStore().import('', xrayFixture);
-    expect(jsonDecode(imported.rawJson!), jsonDecode(xrayFixture));
+    expect(jsonDecode(imported.rawResponse!), jsonDecode(xrayFixture));
     final restored = Subscription.fromJson(imported.toJson());
-    expect(restored.rawJson, imported.rawJson);
+    expect(restored.rawResponse, imported.rawResponse);
     expect(restored.nodes.first['_xray_template'], isNotNull);
+  });
+
+  test('Base64 link subscription can be inspected without losing its response', () {
+    final body = base64Encode(utf8.encode('$realityLink\n$realityLink'));
+    final subscription = Subscription(id: 'test', name: 'Test',
+        url: 'https://example.com/sub', nodes: [], rawResponse: body);
+    final restored = Subscription.fromJson(subscription.toJson());
+    expect(restored.rawResponse, body);
+    expect(decodedSubscriptionResponse(body), '$realityLink\n$realityLink');
   });
 
   test('server subtitles use imported transport and security', () {

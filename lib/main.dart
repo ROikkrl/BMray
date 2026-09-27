@@ -459,22 +459,37 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  String _formatSource(String source) {
+    try {
+      return const JsonEncoder.withIndent('  ').convert(jsonDecode(source));
+    } on FormatException {
+      return source;
+    }
+  }
+
   void _showSubscriptionJson(Subscription item) {
-    final source = item.rawJson;
+    final source = item.rawResponse;
+    final decoded = source == null ? null : decodedSubscriptionResponse(source);
     Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
         JsonConfigPage(title: item.name, tabs: [
           JsonConfigTab('Ответ подписки', source == null
-              ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
-              : _formatJson(source)),
+              ? 'Исходный ответ ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+              : _formatSource(source)),
+          if (decoded != null)
+            JsonConfigTab('Декодировано', _formatSource(decoded)),
         ])));
   }
 
   void _showNodeJson(Subscription item, int index) {
     final node = item.nodes[index];
+    final source = item.rawResponse;
+    final decoded = source == null ? null : decodedSubscriptionResponse(source);
     final tabs = <JsonConfigTab>[
-      JsonConfigTab('Ответ подписки', item.rawJson == null
-          ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
-          : _formatJson(item.rawJson)),
+      JsonConfigTab('Ответ подписки', source == null
+          ? 'Исходный ответ ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+          : _formatSource(source)),
+      if (decoded != null)
+        JsonConfigTab('Декодировано', _formatSource(decoded)),
       JsonConfigTab('Импортированный узел', _formatJson(node)),
     ];
     final key = _delayKey(item, index);
@@ -1177,7 +1192,7 @@ class _HomePageState extends State<HomePage> {
               }
             }, itemBuilder: (_) => [
               const PopupMenuItem(value: 'json',
-                child: Text('Исходный JSON подписки')),
+                child: Text('Ответ подписки')),
               PopupMenuItem(value: 'up', enabled: !_busy && !_autoRefreshing && index > 0 &&
                   _subscriptions[index - 1].pinned == item.pinned,
                 child: const Text('Переместить вверх')),

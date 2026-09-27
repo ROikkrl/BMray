@@ -24,7 +24,7 @@ class Subscription {
     this.updateHours,
     this.lastUpdatedAt,
     this.pinned = false,
-    this.rawJson,
+    this.rawResponse,
   });
 
   final String id;
@@ -39,7 +39,7 @@ class Subscription {
   int? updateHours;
   DateTime? lastUpdatedAt;
   bool pinned;
-  String? rawJson;
+  String? rawResponse;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
@@ -65,7 +65,7 @@ class Subscription {
     updateHours: value['updateHours'] as int?,
     lastUpdatedAt: DateTime.tryParse(value['lastUpdatedAt'] as String? ?? ''),
     pinned: value['pinned'] as bool? ?? false,
-    rawJson: value['rawJson'] as String?,
+    rawResponse: value['rawResponse'] as String? ?? value['rawJson'] as String?,
     );
   }
 
@@ -82,7 +82,7 @@ class Subscription {
     'updateHours': updateHours,
     'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
     'pinned': pinned,
-    'rawJson': rawJson,
+    'rawResponse': rawResponse,
   };
 }
 
@@ -125,7 +125,7 @@ class SubscriptionStore {
         directRules: template?.directRules ?? parsed!.directRules,
         notice: template?.notice ?? parsed?.notice,
         customName: name.trim().isNotEmpty,
-        rawJson: _jsonPayload(input),
+        rawResponse: input,
       );
     }
     final normalized = Uri.tryParse(input);
@@ -154,6 +154,7 @@ class SubscriptionStore {
         url: input,
         nodes: [node],
         notice: node['_unsupported_reason']?.toString(),
+        rawResponse: input,
       );
     }
     if (normalized == null ||
@@ -185,7 +186,7 @@ class SubscriptionStore {
       traffic: SubscriptionTraffic.fromHeader(downloaded.userInfo),
       updateHours: subscriptionUpdateHours(downloaded.updateInterval),
       lastUpdatedAt: DateTime.now(),
-      rawJson: _jsonPayload(downloaded.body),
+      rawResponse: downloaded.body,
     );
   }
 
@@ -208,7 +209,7 @@ class SubscriptionStore {
     item.traffic = SubscriptionTraffic.fromHeader(downloaded.userInfo);
     item.updateHours = subscriptionUpdateHours(downloaded.updateInterval);
     item.lastUpdatedAt = DateTime.now();
-    item.rawJson = _jsonPayload(downloaded.body);
+    item.rawResponse = downloaded.body;
     if (!item.customName) {
       item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
     }
@@ -339,22 +340,18 @@ class SubscriptionStore {
   }
 }
 
-/// Preserve JSON responses for local inspection. Decode Base64-wrapped JSON.
-String? _jsonPayload(String body) {
-  var text = body.trim();
-  if (!text.startsWith('{') && !text.startsWith('[') &&
-      !text.contains('://')) {
-    try {
-      text = utf8.decode(base64.decode(base64.normalize(text))).trim();
-    } on FormatException {
-      return null;
-    }
-  }
-  if (!text.startsWith('{') && !text.startsWith('[')) return null;
-  try {
-    final parsed = jsonDecode(text);
-    return parsed is Map || parsed is List ? text : null;
-  } on FormatException {
+/// Gives the inspector a readable second view for Base64 subscriptions.
+String? decodedSubscriptionResponse(String body) {
+  final text = body.trim();
+  if (text.startsWith('{') || text.startsWith('[') || text.contains('://')) {
     return null;
   }
+  try {
+    final decoded = utf8.decode(base64.decode(base64.normalize(text))).trim();
+    if (decoded.startsWith('{') || decoded.startsWith('[') ||
+        decoded.contains('://')) return decoded;
+  } on FormatException {
+    // Plain text responses are displayed without a decoded tab.
+  }
+  return null;
 }
