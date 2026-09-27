@@ -107,6 +107,9 @@ class _HomePageState extends State<HomePage> {
     return index < 0 ? 0 : index;
   }
 
+  bool _useXrayForNode(Map<String, dynamic> node) =>
+      usesXray(node) || (Platform.isAndroid && prefersXrayTls(node));
+
   @override
   void initState() {
     super.initState();
@@ -366,11 +369,11 @@ class _HomePageState extends State<HomePage> {
       if (node['_unsupported_reason'] != null) {
         throw FormatException(node['_unsupported_reason'].toString());
       }
-      final bridge = usesXray(node) && Platform.isAndroid
+      final bridge = _useXrayForNode(node) && Platform.isAndroid
           ? buildXrayBridge(node,
               options: const SingboxConfigOptions(usePlatformDns: true))
           : null;
-      if (usesXray(node) && bridge == null) {
+      if (_useXrayForNode(node) && bridge == null) {
         throw const FormatException('Этот профиль Xray доступен только на Android.');
       }
       final config = bridge?.singbox ?? buildSingboxConfig(node,
@@ -565,7 +568,7 @@ class _HomePageState extends State<HomePage> {
           'без отдельного локального прокси. Сравните ответ подписки с конфигом HAPP.';
     }
     try {
-      if (usesXray(node)) {
+      if (_useXrayForNode(node)) {
         final bridge = buildXrayBridge(node,
             options: const SingboxConfigOptions(usePlatformDns: true));
         tabs.add(JsonConfigTab('Xray: подключение', _formatJson(bridge.xray)));
@@ -743,11 +746,11 @@ class _HomePageState extends State<HomePage> {
         if (node['_unsupported_reason'] != null) {
           return (delay: null, reason: node['_unsupported_reason'].toString());
         }
-        if (usesXray(node) && !Platform.isAndroid) {
+        if (_useXrayForNode(node) && !Platform.isAndroid) {
           return (delay: null, reason: 'Этот профиль Xray доступен только на Android');
         }
         if (node['type'] == 'auto') return _probeAutoProxy(node);
-        final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
+        final bridge = _useXrayForNode(node) ? buildXrayBridge(node, probe: true,
             options: const SingboxConfigOptions(usePlatformDns: true)) : null;
         final config = bridge?.singbox ?? buildSingboxConfig(node,
             options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
@@ -781,6 +784,9 @@ class _HomePageState extends State<HomePage> {
         await _waitForDisconnect();
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
+      if (Platform.isAndroid) {
+        await _prepareNetworkForPing(item, indices);
+      }
       if (await _vpn.otherVpnActive()) {
         throw const FormatException('Выключите VPN другого приложения в настройках Android перед проверкой.');
       }
@@ -803,6 +809,65 @@ class _HomePageState extends State<HomePage> {
     } finally {
       if (mounted) setState(() => _pingBusy = false);
     }
+  }
+
+  Future<void> _prepareNetworkForPing(Subscription item, List<int> indices) async {
+    final candidates = <Map<String, dynamic>>[
+      for (final index in indices)
+        if (index >= 0 && index < item.nodes.length) item.nodes[index],
+      for (final subscription in _subscriptions) ...subscription.nodes,
+    ];
+    String? configJson;
+    String? xrayJson;
+    for (final node in candidates) {
+      final host = node['server']?.toString() ?? '';
+      if (node['_unsupported_reason'] != null || host.isEmpty ||
+          host == 'localhost' ||
+          InternetAddress.tryParse(host)?.isLoopback == true) continue;
+      try {
+        final bridge = _useXrayForNode(node)
+            ? buildXrayBridge(node,
+                options: const SingboxConfigOptions(usePlatformDns: true))
+            : null;
+        final config = bridge?.singbox ?? buildSingboxConfig(node,
+            options: const SingboxConfigOptions(usePlatformDns: true));
+        final candidateJson = jsonEncode(config);
+        if (await _vpn.validateConfig(candidateJson) != null) continue;
+        configJson = candidateJson;
+        xrayJson = bridge == null ? null : jsonEncode(bridge.xray);
+        break;
+      } catch (_) {
+        // A different imported server may still be suitable for preparation.
+      }
+    }
+    if (configJson == null) {
+      if (await _vpn.otherVpnActive()) {
+        throw const FormatException('Нет пригодного сервера для смены VPN перед пингом.');
+      }
+      return;
+    }
+    var attempted = false;
+    try {
+      attempted = true;
+      await _vpn.start(configJson, name: 'BMray', xrayConfig: xrayJson);
+      for (var attempt = 0; attempt < 100; attempt++) {
+        final status = await _vpn.currentStatus();
+        if (status.state == VpnState.connected) break;
+        if (status.state == VpnState.error) {
+          throw FormatException(status.message ?? 'Не удалось подготовить VPN для пинга.');
+        }
+        if (attempt == 99) {
+          throw const FormatException('VPN не запустился для подготовки пинга.');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    } finally {
+      if (attempted) {
+        await _vpn.stop();
+        await _waitForDisconnect();
+      }
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 250));
   }
 
   String _safeLogs(String logs) => logs
@@ -1013,10 +1078,12 @@ class _HomePageState extends State<HomePage> {
     _settingsHeading('Подписка'),
     _settingsEntry('User-Agent', 'HWID, User-Agent и Cookie BMray',
         Icons.badge_outlined, 5),
+    _settingsEntry('Логи запросов подписки', 'HTTP-ответы и выбор формата подписки',
+        Icons.receipt_long_outlined, 7),
     _settingsHeading('Проверка соединения'),
     _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
     _settingsHeading('Приложение'),
-    _settingsEntry('Кэш', 'Журнал запросов подписок и лимит размера',
+    _settingsEntry('Кэш', 'Лимит размера и очистка журнала',
         Icons.storage_rounded, 6),
     _settingsEntry('Журнал подключения', 'Логи ядра и VPN',
         Icons.receipt_long_outlined, 4),
@@ -1060,16 +1127,6 @@ class _HomePageState extends State<HomePage> {
     FutureBuilder<int>(future: _cacheSize, builder: (context, snapshot) =>
         Text('Занято: ${snapshot.hasData ? _formatTraffic(snapshot.data) : '…'}')),
     const SizedBox(height: 12),
-    ListTile(
-      leading: const Icon(Icons.receipt_long_outlined),
-      title: const Text('Журнал запросов подписки'),
-      subtitle: const Text('Просмотреть и скопировать последние записи'),
-      trailing: const Icon(Icons.chevron_right_rounded),
-      onTap: () => setState(() {
-        _requestLogs = _store.requestLog.read();
-        _pageIndex = 7;
-      }),
-    ),
     OutlinedButton.icon(
       icon: const Icon(Icons.delete_outline_rounded),
       label: const Text('Очистить журнал запросов'),
@@ -1147,9 +1204,10 @@ class _HomePageState extends State<HomePage> {
       'Изменение HWID может занять новое место в лимите устройств панели.'),
     const SizedBox(height: 8),
     const Text('Для подписки Base64 с локальным адресом АвтоБС BMray '
-      'повторяет запрос с User-Agent «Happ BMray/…»: правило Remnawave '
-      'выдаёт готовый XRAY_JSON. В остальных запросах действует '
-      'указанный ниже User-Agent.'),
+      'повторяет запрос с User-Agent «Happ/версия BMray/…»: панель может '
+      'выдать готовый XRAY_JSON. В остальных запросах действует '
+      'указанный ниже User-Agent. Если он уже начинается с Happ, повторного '
+      'запроса не будет.'),
     const SizedBox(height: 18),
     TextField(controller: _hwidInput, autocorrect: false,
       decoration: const InputDecoration(labelText: 'HWID',

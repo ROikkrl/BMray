@@ -111,7 +111,14 @@ class FlutterSingboxVpnPlugin :
                 startVpnFlow()
                 result.success(null)
             }
-            "stop" -> { stopVpn(); result.success(null) }
+            "stop" -> {
+                // The user may cancel while Android's VPN permission dialog is open.
+                // A late consent result must not start a tunnel after stop().
+                pendingConfig = null
+                pendingXrayConfig = null
+                stopVpn()
+                result.success(null)
+            }
             "otherVpnActive" -> {
                 val cm = context.getSystemService(ConnectivityManager::class.java)
                 val activeVpn = cm.activeNetwork?.let { network ->
@@ -177,6 +184,8 @@ class FlutterSingboxVpnPlugin :
                         val detail = e.message?.lowercase() ?: ""
                         val reason = when {
                             "reality verification failed" in detail -> "Ошибка проверки REALITY"
+                            "certificate" in detail || "x509" in detail -> "Ошибка сертификата TLS или SNI"
+                            "tls" in detail && "handshake" in detail -> "Ошибка TLS handshake"
                             "timeout" in detail || "deadline exceeded" in detail -> "Тайм-аут"
                             "unknown utls" in detail || "fingerprint" in detail -> "Неподдерживаемый fingerprint"
                             "dns" in detail || "lookup" in detail -> "Ошибка DNS"

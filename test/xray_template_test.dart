@@ -129,6 +129,41 @@ void main() {
     expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
   });
 
+  test('raw XHTTP TLS outbound restores absent SNI from its Host', () {
+    final node = parseShareLink(
+      'vless://00000000-0000-4000-8000-000000000001@192.0.2.1:443'
+      '?type=xhttp&security=tls&host=cdn.example.com&path=%2Ffile#Test',
+      includeUnsupported: true,
+    )!;
+    final raw = xrayOutboundFromNode(node);
+    (raw['streamSettings']['tlsSettings'] as Map)['serverName'] = '';
+    node['_xray_outbound'] = raw;
+    final stream = buildXrayBridge(node).xray['outbounds'][0]['streamSettings'];
+    expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
+    expect(raw['streamSettings']['tlsSettings']['serverName'], '');
+  });
+
+  test('VLESS TCP TLS can use Xray on Android without losing SNI', () {
+    final node = parseShareLink(
+      'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
+      '?type=tcp&security=tls&sni=cdn.example.com&fp=firefox#TLS',
+    )!;
+    expect(prefersXrayTls(node), true);
+    final stream = buildXrayBridge(node).xray['outbounds'][0]['streamSettings'];
+    expect(stream['network'], 'tcp');
+    expect(stream['security'], 'tls');
+    expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
+    expect(stream['tlsSettings']['fingerprint'], 'firefox');
+  });
+
+  test('DNS outbound is an Xray internal route, not a broken server', () {
+    final config = jsonDecode(xrayFixture) as Map<String, dynamic>;
+    (config['outbounds'] as List).add({'tag': 'dns', 'protocol': 'dns'});
+    final parsed = parseXrayTemplate(jsonEncode(config))!;
+    expect(parsed.notice ?? '', isNot(contains('dns')));
+    expect(parsed.nodes.first['type'], 'auto');
+  });
+
   test('Xray Hysteria2 JSON is preserved for the Android core', () {
     final template = parseXrayTemplate(hysteriaXrayFixture)!;
     expect(template.nodes, hasLength(1));
@@ -232,6 +267,13 @@ void main() {
     expect(needsXrayJsonRetry('$remote\n$local'), false);
     expect(needsXrayJsonRetry(xrayFixture), false);
     expect(parseXrayTemplate(xrayFixture)!.nodes.first['type'], 'auto');
+  });
+
+  test('loopback discovery uses endpoints rather than AutoBS names', () {
+    const nameAgnostic = 'vless://00000000-0000-4000-8000-000000000001@'
+        '[::1]:237?type=xhttp&security=tls#Unexpected%20name';
+    final encoded = base64Encode(utf8.encode(nameAgnostic));
+    expect(needsXrayJsonRetry(encoded), true);
   });
 
   test('server subtitles use imported transport and security', () {

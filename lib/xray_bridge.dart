@@ -16,12 +16,24 @@ bool usesXray(Map<String, dynamic> node) =>
     (node['type'] == 'vless' && node['transport'] is Map &&
     (node['transport'] as Map)['type'] == 'xhttp');
 
+/// Plain VLESS/TCP/TLS can use the same Xray core as XHTTP on Android.
+/// Other platforms continue using the sing-box outbound.
+bool prefersXrayTls(Map<String, dynamic> node) {
+  if (node['type'] != 'vless' || node['tls'] is! Map) return false;
+  final tls = node['tls'] as Map;
+  return tls['enabled'] == true && tls['reality'] is! Map &&
+      (node['transport'] is! Map ||
+          (node['transport'] as Map)['type'] == 'tcp');
+}
+
 XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   bool probe = false,
   String? probeOutboundTag,
   SingboxConfigOptions options = const SingboxConfigOptions(),
 }) {
-  if (!usesXray(node)) throw const FormatException('Ожидался профиль Xray');
+  if (!usesXray(node) && !prefersXrayTls(node)) {
+    throw const FormatException('Ожидался профиль Xray');
+  }
   final random = Random.secure();
   final port = 20000 + random.nextInt(35000);
   final user = 'bmray';
@@ -39,6 +51,18 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   for (final entry in templateOutbounds ?? [outbound]) {
     final settings = entry is Map ? entry['settings'] : null;
     final servers = settings is Map ? settings['vnext'] : null;
+    final stream = entry is Map ? entry['streamSettings'] : null;
+    if (stream is Map && stream['security'] == 'tls' &&
+        stream['tlsSettings'] is Map) {
+      final tls = stream['tlsSettings'] as Map;
+      if (tls['serverName']?.toString().isNotEmpty != true) {
+        final xhttp = stream['xhttpSettings'];
+        final transportHost = xhttp is Map ? xhttp['host']?.toString() : null;
+        if (transportHost != null && transportHost.isNotEmpty) {
+          tls['serverName'] = transportHost;
+        }
+      }
+    }
     if (servers is List) {
       for (final server in servers) {
         final users = server is Map ? server['users'] : null;

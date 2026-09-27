@@ -331,6 +331,12 @@ class SubscriptionStore {
           Uri initial) async {
     final original = await _download(initial);
     if (!needsXrayJsonRetry(original.body)) return original;
+    final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
+    if (subscriptionIdentity.isHappUserAgent) {
+      await requestLog.append({'event': 'compatibility', 'id': original.id,
+        'reason': 'base64-loopback-template', 'result': 'custom-happ-agent-kept'});
+      return original;
+    }
     await requestLog.append({'event': 'compatibility', 'id': original.id,
       'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
     try {
@@ -376,6 +382,10 @@ class SubscriptionStore {
         }
         for (final entry in headers.entries) {
           request.headers.set(entry.key, entry.value);
+        }
+        if (requestXrayJson || subscriptionIdentity.isHappUserAgent) {
+          request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
+          request.headers.set('Pragma', 'no-cache');
         }
         final requestHeaderNames = <String>[];
         request.headers.forEach((name, values) =>

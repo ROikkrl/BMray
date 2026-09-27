@@ -14,6 +14,8 @@ class SubscriptionIdentity {
   final String hwid;
   final String userAgent;
 
+  bool get isHappUserAgent => userAgent.toLowerCase().startsWith('happ');
+
   static String defaultUserAgentFor(String platform, String version) =>
       'BMray/$platform/$version';
 
@@ -63,6 +65,10 @@ class SubscriptionIdentity {
 
   /// The Remnawave XRAY_JSON rule requires the User-Agent to *start* with Happ.
   /// Only the retry for a Base64 subscription with local template hosts uses it.
-  String get xrayJsonUserAgent =>
-      userAgent.toLowerCase().startsWith('happ') ? userAgent : 'Happ $userAgent';
+  String get xrayJsonUserAgent {
+    if (isHappUserAgent) return userAgent;
+    final version = RegExp(r'/([0-9]+(?:\.[0-9]+){1,2})$')
+        .firstMatch(userAgent)?.group(1) ?? '1.0.0';
+    return 'Happ/$version $userAgent';
+  }
 }

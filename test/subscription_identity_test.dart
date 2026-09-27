@@ -15,7 +15,7 @@ void main() {
     expect(headers['x-hwid'], identity.hwid);
     expect(headers['user-agent'], 'BMray/android/0.2.4');
     expect(headers['cookie'], 'BMray=BMray-0123456789');
-    expect(identity.xrayJsonUserAgent, 'Happ BMray/android/0.2.4');
+    expect(identity.xrayJsonUserAgent, 'Happ/0.2.4 BMray/android/0.2.4');
     expect(RegExp(r'^happ', caseSensitive: false)
         .hasMatch(identity.xrayJsonUserAgent), true);
     expect(headers['user-agent'], 'BMray/android/0.2.4');
@@ -27,5 +27,12 @@ void main() {
         'BMray/android/0.2.4');
     expect(SubscriptionIdentity.defaultUserAgentFor('ios', '0.2.4'),
         'BMray/ios/0.2.4');
+  });
+
+  test('a manually set Happ agent is kept exactly as entered', () {
+    const identity = SubscriptionIdentity('BMray-0123456789', 'hApP/android/9.9');
+    expect(identity.isHappUserAgent, true);
+    expect(identity.requestHeaders['user-agent'], 'hApP/android/9.9');
+    expect(identity.xrayJsonUserAgent, 'hApP/android/9.9');
   });
 }

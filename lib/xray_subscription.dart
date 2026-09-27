@@ -58,7 +58,8 @@ XrayTemplate? parseXrayTemplate(String content) {
       continue;
     }
     if (entry['protocol'] != 'vless') {
-      if (entry['protocol'] != 'freedom' && entry['protocol'] != 'blackhole') {
+      if (!const {'freedom', 'blackhole', 'dns'}
+          .contains(entry['protocol'])) {
         unsupported.add(entry['protocol']?.toString() ?? 'unknown');
       }
       continue;
