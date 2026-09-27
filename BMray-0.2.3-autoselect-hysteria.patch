@@ -1,0 +1,523 @@
+diff --git a/lib/main.dart b/lib/main.dart
+index 0cef74a..8ee32bb 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -352,7 +352,7 @@ class _HomePageState extends State<HomePage> {
+       }
+       final config = bridge?.singbox ?? buildSingboxConfig(node,
+           options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
+-      if (item.directRules.isNotEmpty) {
++      if (item.directRules.isNotEmpty && node['type'] != 'auto') {
+         (config['route']['rules'] as List).addAll(item.directRules);
+       }
+       final configJson = jsonEncode(config);
+@@ -446,6 +446,68 @@ class _HomePageState extends State<HomePage> {
+   String _delayKey(Subscription item, int index) =>
+       '${item.id}:$index:${_pingMethod.name}';
+ 
++  Future<({int? delay, String? reason})> _probeAutoProxy(
++      Map<String, dynamic> node) async {
++    final template = node['_xray_template'];
++    if (template is! Map || template['outbounds'] is! List ||
++        template['routing'] is! Map) {
++      return (delay: null, reason: 'Автовыбор: нет серверов');
++    }
++    final routing = template['routing'] as Map;
++    final balancers = routing['balancers'];
++    if (balancers is! List || balancers.isEmpty || balancers.first is! Map) {
++      return (delay: null, reason: 'Автовыбор: нет балансировщика');
++    }
++    final balancer = balancers.first as Map;
++    final selectors = balancer['selector'] is List
++        ? (balancer['selector'] as List).map((item) => item.toString()).toList()
++        : <String>[];
++    final tags = (template['outbounds'] as List)
++        .whereType<Map>()
++        .map((item) => item['tag']?.toString() ?? '')
++        .where((tag) => selectors.any((prefix) => tag.startsWith(prefix)))
++        .toList();
++    final fallback = balancer['fallbackTag']?.toString();
++    final available = (template['outbounds'] as List)
++        .whereType<Map>().any((item) => item['tag'] == fallback);
++    int? fastest;
++    String? lastError;
++    for (final tag in tags) {
++      try {
++        final bridge = buildXrayBridge(node, probe: true,
++            probeOutboundTag: tag,
++            options: const SingboxConfigOptions(usePlatformDns: true));
++        final result = await _vpn.proxyGetDelay(jsonEncode(bridge.singbox),
++            timeout: Duration(seconds: _proxyTimeoutSeconds),
++            xrayConfig: jsonEncode(bridge.xray));
++        if (result.delay != null &&
++            (fastest == null || result.delay! < fastest)) {
++          fastest = result.delay;
++        }
++        lastError = result.reason ?? lastError;
++      } catch (_) {
++        lastError = 'Ошибка проверки прокси';
++      }
++    }
++    if (fastest == null && available && fallback != null &&
++        !tags.contains(fallback)) {
++      try {
++        final bridge = buildXrayBridge(node, probe: true,
++            probeOutboundTag: fallback,
++            options: const SingboxConfigOptions(usePlatformDns: true));
++        final result = await _vpn.proxyGetDelay(jsonEncode(bridge.singbox),
++            timeout: Duration(seconds: _proxyTimeoutSeconds),
++            xrayConfig: jsonEncode(bridge.xray));
++        fastest = result.delay;
++        lastError = result.reason ?? lastError;
++      } catch (_) {
++        lastError = 'Ошибка проверки резервного сервера';
++      }
++    }
++    return (delay: fastest,
++        reason: fastest == null ? lastError ?? 'Автовыбор: нет ответа' : null);
++  }
++
+   Future<({int? delay, String? reason})> _probe(Map<String, dynamic> node) async {
+     if (node['type'] == 'auto' && _pingMethod != PingMethod.proxyGet) {
+       final template = node['_xray_template'];
+@@ -503,6 +565,7 @@ class _HomePageState extends State<HomePage> {
+         if (usesXray(node) && !Platform.isAndroid) {
+           return (delay: null, reason: 'Этот профиль Xray доступен только на Android');
+         }
++        if (node['type'] == 'auto') return _probeAutoProxy(node);
+         final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
+             options: const SingboxConfigOptions(usePlatformDns: true)) : null;
+         final config = bridge?.singbox ?? buildSingboxConfig(node,
+diff --git a/lib/subscriptions.dart b/lib/subscriptions.dart
+index eaeb634..76394ca 100644
+--- a/lib/subscriptions.dart
++++ b/lib/subscriptions.dart
+@@ -102,20 +102,25 @@ class SubscriptionStore {
+ 
+   Future<Subscription> import(String name, String url) async {
+     final input = url.trim();
+-    if (input.startsWith('{')) {
+-      final template = parseXrayTemplate(input);
+-      if (template == null) {
++    if (input.startsWith('{') || input.startsWith('[')) {
++      final template = input.startsWith('{') ? parseXrayTemplate(input) : null;
++      final parsed = template == null && input.startsWith('[')
++          ? _parse(input) : null;
++      if (template == null && parsed == null) {
+         throw const FormatException('Не удалось разобрать Xray JSON.');
+       }
+-      if (template.nodes.isEmpty) {
+-        throw FormatException(template.notice ??
++      final nodes = template?.nodes ?? parsed!.nodes;
++      if (nodes.isEmpty) {
++        throw FormatException(template?.notice ?? parsed?.notice ??
+             'В Xray JSON нет клиентских серверов с адресом и учётными данными.');
+       }
+       return Subscription(
+         id: DateTime.now().microsecondsSinceEpoch.toString(),
+-        name: name.trim().isEmpty ? template.name ?? 'Xray JSON' : name.trim(),
+-        url: input, nodes: template.nodes, directRules: template.directRules,
+-        notice: template.notice, customName: name.trim().isNotEmpty,
++        name: name.trim().isEmpty ? template?.name ?? 'Xray JSON' : name.trim(),
++        url: input, nodes: nodes,
++        directRules: template?.directRules ?? parsed!.directRules,
++        notice: template?.notice ?? parsed?.notice,
++        customName: name.trim().isNotEmpty,
+       );
+     }
+     final normalized = Uri.tryParse(input);
+@@ -125,6 +130,7 @@ class SubscriptionStore {
+       'trojan',
+       'ss',
+       'hysteria2',
++      'hysteria',
+       'hy2',
+       'tuic',
+     };
+@@ -224,7 +230,9 @@ class SubscriptionStore {
+           final notices = <String>[];
+           for (final entry in entries) {
+             if (entry is! Map) continue;
+-            final profile = parseXrayTemplate(jsonEncode(entry));
++            final profile = parseXrayTemplate(jsonEncode(
++                entry['protocol'] != null && entry['outbounds'] == null
++                    ? {'outbounds': [entry]} : entry));
+             if (profile == null) continue;
+             nodes.addAll(profile.nodes);
+             directRules.addAll(profile.directRules);
+diff --git a/lib/xray_bridge.dart b/lib/xray_bridge.dart
+index 3934825..4cd6868 100644
+--- a/lib/xray_bridge.dart
++++ b/lib/xray_bridge.dart
+@@ -18,6 +18,7 @@ bool usesXray(Map<String, dynamic> node) =>
+ 
+ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+   bool probe = false,
++  String? probeOutboundTag,
+   SingboxConfigOptions options = const SingboxConfigOptions(),
+ }) {
+   if (!usesXray(node)) throw const FormatException('Ожидался профиль Xray');
+@@ -51,22 +52,25 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+   }
+   final xray = <String, dynamic>{
+     'log': {'loglevel': 'warning'},
++    if (template is Map && template['dns'] is Map)
++      'dns': template['dns'],
+     'inbounds': [{
+       'tag': 'local-socks', 'listen': '127.0.0.1', 'port': port,
+       'protocol': 'socks',
+       'settings': {'auth': 'password', 'users': [{'user': user, 'pass': password}], 'udp': true},
++      'sniffing': {'enabled': true, 'routeOnly': true,
++        'destOverride': ['http', 'tls', 'quic']},
+     }],
+     'outbounds': templateOutbounds ?? [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
+-    if (template is Map) 'routing': {
+-      'rules': [{
+-        'type': 'field', 'network': 'tcp,udp',
+-        'balancerTag': (template['routing'] as Map)['balancers'][0]['tag'],
+-      }],
+-      'balancers': (template['routing'] as Map)['balancers'],
+-    },
+-    if (template is Map && template['burstObservatory'] is Map)
++    if (template is Map) 'routing': probeOutboundTag == null
++        ? _autoRouting(template)
++        : {'rules': [{'type': 'field', 'network': 'tcp,udp',
++            'outboundTag': probeOutboundTag}]},
++    if (template is Map && probeOutboundTag == null &&
++        template['burstObservatory'] is Map)
+       'burstObservatory': template['burstObservatory'],
+-    if (template is Map && template['observatory'] is Map)
++    if (template is Map && probeOutboundTag == null &&
++        template['observatory'] is Map)
+       'observatory': template['observatory'],
+   };
+   final socks = <String, dynamic>{
+@@ -81,6 +85,66 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+   return XrayBridge(singbox, xray);
+ }
+ 
++Map<String, dynamic> _autoRouting(Map template) {
++  final source = template['routing'] as Map;
++  final balancers = source['balancers'] as List;
++  final tag = (balancers.first as Map)['tag'];
++  final available = (template['outbounds'] as List)
++      .whereType<Map>().map((item) => item['tag']).toSet();
++  final rules = <Map<String, dynamic>>[];
++  if (source['rules'] is List) {
++    for (final original in source['rules'] as List) {
++      if (original is! Map || original['type'] != 'field') continue;
++      if (original['outboundTag'] != null &&
++          !available.contains(original['outboundTag'])) continue;
++      if (original['balancerTag'] != null && original['balancerTag'] != tag) continue;
++      final inboundTags = original['inboundTag'];
++      if (inboundTags is List &&
++          !inboundTags.any((value) => value == 'socks' ||
++              value == 'http' || value == 'local-socks')) continue;
++      final rule = Map<String, dynamic>.from(original)..remove('inboundTag');
++      if (rule['domain'] is List) {
++        final domains = (rule['domain'] as List).where((value) =>
++            !value.toString().startsWith('geosite:')).toList();
++        if (domains.isEmpty) rule.remove('domain');
++        else rule['domain'] = domains;
++      }
++      if (rule['ip'] is List) {
++        final ips = <String>[];
++        for (final value in rule['ip'] as List) {
++          if (value == 'geoip:private') {
++            ips.addAll(['10.0.0.0/8', '172.16.0.0/12',
++              '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16',
++              'fc00::/7', 'fe80::/10', '::1/128']);
++          } else if (!value.toString().startsWith('geoip:')) {
++            ips.add(value.toString());
++          }
++        }
++        if (ips.isEmpty) rule.remove('ip');
++        else rule['ip'] = ips;
++      }
++      // A geo-only rule must not turn into an unconditional direct rule.
++      if (!rule.containsKey('domain') && !rule.containsKey('ip') &&
++          !rule.containsKey('network') && !rule.containsKey('port') &&
++          !rule.containsKey('protocol')) continue;
++      rules.add(rule);
++    }
++  }
++  // SOCKS traffic must always have a route, even for older stored templates.
++  if (!rules.any((rule) => rule['balancerTag'] == tag &&
++      rule['network'] == 'tcp,udp')) {
++    rules.add({'type': 'field', 'network': 'tcp,udp', 'balancerTag': tag});
++  }
++  return {
++    'rules': rules,
++    'balancers': balancers,
++    if (source['domainStrategy'] != null)
++      'domainStrategy': source['domainStrategy'],
++    if (source['domainMatcher'] != null)
++      'domainMatcher': source['domainMatcher'],
++  };
++}
++
+ Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {
+   final transport = node['transport'] as Map;
+   final tls = node['tls'] as Map?;
+diff --git a/lib/xray_subscription.dart b/lib/xray_subscription.dart
+index 6a499c1..fc26632 100644
+--- a/lib/xray_subscription.dart
++++ b/lib/xray_subscription.dart
+@@ -15,8 +15,8 @@ XrayTemplate? parseXrayTemplate(String content) {
+   try {
+     final decoded = jsonDecode(content);
+     if (decoded is Map && decoded['outbounds'] is List &&
+-        (decoded['routing'] is Map ||
+-            (decoded['outbounds'] as List).any((o) => o is Map && o['protocol'] != null))) {
++        (decoded['outbounds'] as List).any(
++            (o) => o is Map && o['protocol'] != null)) {
+       root = decoded;
+     }
+   } on FormatException {
+@@ -28,23 +28,33 @@ XrayTemplate? parseXrayTemplate(String content) {
+   final unsupported = <String>{};
+   for (final entry in root['outbounds'] as List) {
+     if (entry is! Map) continue;
+-    if (entry['protocol'] == 'hysteria') {
++    if (entry['protocol'] == 'hysteria' || entry['protocol'] == 'hysteria2') {
+       final opts = entry['settings'];
+       final stream = entry['streamSettings'];
+       final address = opts is Map ? opts['address']?.toString() : null;
+       final port = opts is Map ? int.tryParse('${opts['port']}') : null;
+-      if (opts is Map && opts['version'] == 2 && stream is Map &&
+-          address != null && address.isNotEmpty &&
+-          port != null && port >= 1 && port <= 65535) {
+-        nodes.add({
+-          'type': 'hysteria2',
+-          'tag': entry['tag']?.toString() ?? '$address:$port',
+-          'server': address,
+-          'server_port': port,
+-          'transport': {'type': stream['network']?.toString() ?? 'hysteria'},
+-          '_xray_outbound': Map<String, dynamic>.from(entry),
+-        });
+-      }
++      final transport = stream is Map ? stream['hysteriaSettings'] : null;
++      final version = opts is Map ? int.tryParse('${opts['version']}') : null;
++      final transportVersion = transport is Map
++          ? int.tryParse('${transport['version']}') : null;
++      final validEndpoint = address != null && address.isNotEmpty &&
++          port != null && port >= 1 && port <= 65535;
++      nodes.add({
++        'type': 'hysteria2',
++        'tag': entry['tag']?.toString() ??
++            (validEndpoint ? '$address:$port' : 'Hysteria2'),
++        'server': address ?? '',
++        'server_port': port ?? 0,
++        'transport': {'type': stream is Map
++            ? stream['network']?.toString() ?? 'hysteria' : 'hysteria'},
++        if (validEndpoint && version == 2 && stream is Map &&
++            transportVersion == 2)
++          '_xray_outbound': Map<String, dynamic>.from(entry)
++            ..['protocol'] = 'hysteria'
++        else
++          '_unsupported_reason': 'Hysteria2: в подписке нет корректных '
++              'address/port или version=2 в settings и hysteriaSettings',
++      });
+       continue;
+     }
+     if (entry['protocol'] != 'vless') {
+@@ -187,9 +197,38 @@ XrayTemplate? parseXrayTemplate(String content) {
+       final target = vnext is List && vnext.isNotEmpty ? vnext.first : null;
+       final address = target is Map ? target['address']?.toString() : null;
+       final port = target is Map ? int.tryParse('${target['port']}') : null;
++      final supportingTags = <String>{};
++      if (candidate['fallbackTag'] is String) {
++        supportingTags.add(candidate['fallbackTag'] as String);
++      }
++      if (routing['rules'] is List) {
++        for (final rule in routing['rules'] as List) {
++          if (rule is Map && rule['outboundTag'] is String) {
++            supportingTags.add(rule['outboundTag'] as String);
++          }
++        }
++      }
++      for (final outbound in root['outbounds'] as List) {
++        if (outbound is Map && supportingTags.contains(outbound['tag']) &&
++            !matched.any((item) => item['tag'] == outbound['tag'])) {
++          matched.add(Map<String, dynamic>.from(outbound));
++        }
++      }
++      final selectedBalancer = Map<String, dynamic>.from(candidate);
++      if (!matched.any((item) => item['tag'] == selectedBalancer['fallbackTag'])) {
++        selectedBalancer.remove('fallbackTag');
++      }
+       final config = <String, dynamic>{
+         'outbounds': matched,
+-        'routing': {'balancers': [Map<String, dynamic>.from(candidate)]},
++        'routing': {
++          'balancers': [selectedBalancer],
++          if (routing['rules'] is List) 'rules': routing['rules'],
++          if (routing['domainStrategy'] != null)
++            'domainStrategy': routing['domainStrategy'],
++          if (routing['domainMatcher'] != null)
++            'domainMatcher': routing['domainMatcher'],
++        },
++        if (root['dns'] is Map) 'dns': root['dns'],
+         if (root['burstObservatory'] is Map)
+           'burstObservatory': root['burstObservatory'],
+         if (root['observatory'] is Map) 'observatory': root['observatory'],
+diff --git a/packages/vpn_plugin/lib/src/share_link_parser.dart b/packages/vpn_plugin/lib/src/share_link_parser.dart
+index 541c780..5ed3ee4 100644
+--- a/packages/vpn_plugin/lib/src/share_link_parser.dart
++++ b/packages/vpn_plugin/lib/src/share_link_parser.dart
+@@ -36,6 +36,17 @@ Map<String, dynamic>? parseShareLink(String link, {bool includeUnsupported = fal
+       case 'hysteria2':
+       case 'hy2':
+         return _parseHysteria2(trimmed);
++      case 'hysteria':
++        final parts = _parseUriStyle(trimmed, 'hysteria');
++        if (parts == null) return null;
++        if (parts.params['version'] == '2') {
++          return _parseHysteria2('hysteria2://${trimmed.substring('hysteria://'.length)}');
++        }
++        return includeUnsupported ? {
++          'type': 'hysteria2', 'tag': _tagFor(parts),
++          'server': parts.host, 'server_port': parts.port,
++          '_unsupported_reason': 'Hysteria: ссылка без version=2; требуется Hysteria2',
++        } : null;
+       case 'tuic':
+         return _parseTuic(trimmed);
+       default:
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 51fdbfe..76df534 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: bmray
+ description: BMray — клиент подписок sing-box для Android и iOS.
+ publish_to: none
+-version: 0.2.2+13
++version: 0.2.3+14
+ 
+ environment:
+   sdk: '>=3.12.0 <4.0.0'
+diff --git a/test/fixtures.dart b/test/fixtures.dart
+index 6701ee8..06a4ab9 100644
+--- a/test/fixtures.dart
++++ b/test/fixtures.dart
+@@ -37,6 +37,8 @@ const xrayFixture = '''
+   "outbounds":[
+     {"tag":"WIFI_","protocol":"vless","settings":{"vnext":[{"address":"vpn.example.com","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000001","flow":"xtls-rprx-vision"}]}]},
+      "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"www.example.org","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","shortId":"0123456789abcdef","fingerprint":"qq"}}},
++    {"tag":"WIFI_-2","protocol":"vless","settings":{"vnext":[{"address":"vpn2.example.com","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000001"}]}]},
++     "streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"serverName":"www.example.org","publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","shortId":"0123456789abcdef","fingerprint":"chrome"}}},
+     {"tag":"FALLBACK_","protocol":"vless","settings":{"vnext":[{"address":"backup.example.com","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000001"}]}]},
+      "streamSettings":{"network":"xhttp","security":"tls"}},
+     {"tag":"GRPC_","protocol":"vless","settings":{"vnext":[{"address":"grpc.example.com","port":8443,"users":[{"id":"00000000-0000-4000-8000-000000000001"}]}]},
+diff --git a/test/xray_template_test.dart b/test/xray_template_test.dart
+index 9057db2..3c767bc 100644
+--- a/test/xray_template_test.dart
++++ b/test/xray_template_test.dart
+@@ -3,6 +3,7 @@ import 'dart:convert';
+ import 'package:bmray/xray_subscription.dart';
+ import 'package:bmray/xray_bridge.dart';
+ import 'package:bmray/node_label.dart';
++import 'package:bmray/subscriptions.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:vpn_plugin/vpn_plugin.dart';
+ import 'fixtures.dart';
+@@ -14,27 +15,41 @@ void main() {
+   test('Xray template preserves XHTTP outbound without turning it into TCP', () {
+     final profile = parseXrayTemplate(xrayFixture)!;
+     expect(profile.name, 'Польша - АвтоБС');
+-    expect(profile.nodes, hasLength(4));
++    expect(profile.nodes, hasLength(5));
+     final auto = profile.nodes.first;
+     expect(auto['type'], 'auto');
+     expect(usesXray(auto), true);
+-    final autoBridge = buildXrayBridge(auto, probe: true);
+-    expect(autoBridge.xray['routing']['rules'][0]['balancerTag'], 'auto_wifi');
++    final autoBridge = buildXrayBridge(auto);
++    expect(autoBridge.xray['routing']['rules'].last['balancerTag'], 'auto_wifi');
+     expect(autoBridge.xray['routing']['balancers'][0]['strategy']['type'], 'leastPing');
+     expect(autoBridge.xray['burstObservatory']['subjectSelector'], ['WIFI_']);
+-    expect(autoBridge.xray['outbounds'], hasLength(2));
++    expect(autoBridge.xray['outbounds'], hasLength(4));
++    expect((autoBridge.xray['outbounds'] as List)
++        .map((outbound) => outbound['tag']),
++        containsAll(['WIFI_', 'WIFI_-2', 'FALLBACK_', 'direct']));
++    final rules = autoBridge.xray['routing']['rules'] as List;
++    expect(rules.first['outboundTag'], 'direct');
++    expect(rules.first['domain'], isNot(contains('geosite:category-test')));
++    expect(rules[1]['ip'], contains('10.0.0.0/8'));
++    expect(rules.last['balancerTag'], 'auto_wifi');
++    expect(autoBridge.xray['inbounds'][0]['sniffing']['enabled'], true);
++    final probeBridge = buildXrayBridge(auto, probe: true,
++        probeOutboundTag: 'WIFI_-2');
++    expect(probeBridge.xray['routing']['rules'], hasLength(1));
++    expect(probeBridge.xray['routing']['rules'][0]['outboundTag'], 'WIFI_-2');
++    expect(probeBridge.xray.containsKey('burstObservatory'), false);
+     expect(autoBridge.xray['inbounds'][0]['protocol'], 'socks');
+-    expect(autoBridge.singbox['inbounds'], isEmpty);
++    expect(probeBridge.singbox['inbounds'], isEmpty);
+     final node = profile.nodes[1];
+     expect(node['tag'], 'WIFI_');
+     expect(node['tls']['utls']['fingerprint'], 'qq');
+     expect(node['tls']['reality']['short_id'], '0123456789abcdef');
+-    expect(profile.nodes[2]['tag'], 'FALLBACK_');
+-    expect(usesXray(profile.nodes[2]), isTrue);
+-    final bridge = buildXrayBridge(profile.nodes[2]);
++    expect(profile.nodes[3]['tag'], 'FALLBACK_');
++    expect(usesXray(profile.nodes[3]), isTrue);
++    final bridge = buildXrayBridge(profile.nodes[3]);
+     expect(bridge.xray['outbounds'][0]['streamSettings']['network'], 'xhttp');
+     expect(bridge.singbox['outbounds'][0]['type'], 'socks');
+-    expect(profile.nodes[3]['transport'], {'type': 'grpc', 'service_name': 'service'});
++    expect(profile.nodes[4]['transport'], {'type': 'grpc', 'service_name': 'service'});
+     expect(profile.directRules, isNotEmpty);
+     final config = buildSingboxConfig(node);
+     (config['route']['rules'] as List).addAll(profile.directRules);
+@@ -69,6 +84,31 @@ void main() {
+         {'version': 2});
+   });
+ 
++  test('Incomplete Hysteria stays visible instead of disappearing', () {
++    final incomplete = hysteriaXrayFixture.replaceFirst('"version":2,"address"',
++        '"version":1,"address"');
++    final nodes = parseXrayTemplate(incomplete)!.nodes;
++    expect(nodes, hasLength(1));
++    expect(nodes.single['tag'], 'Латвия (Hysteria2)');
++    expect(nodes.single['_unsupported_reason'], contains('version=2'));
++  });
++
++  test('Hysteria version 2 share link is imported', () {
++    final node = parseShareLink(
++        'hysteria://password@vpn.example.com:443?version=2&sni=example.org#Test');
++    expect(node?['type'], 'hysteria2');
++    expect(node?['password'], 'password');
++  });
++
++  test('Raw Xray outbound array keeps Hysteria in the subscription', () async {
++    final raw = jsonDecode(hysteriaXrayFixture) as Map;
++    final subscription = await SubscriptionStore()
++        .import('', jsonEncode(raw['outbounds']));
++    expect(subscription.nodes, hasLength(1));
++    expect(subscription.nodes.single['type'], 'hysteria2');
++    expect(usesXray(subscription.nodes.single), true);
++  });
++
+   test('server subtitles use imported transport and security', () {
+     final tcp = parseShareLink(realityLink)!;
+     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');
+diff --git a/tool/config_fixtures.dart b/tool/config_fixtures.dart
+index 7917421..97b8d2b 100644
+--- a/tool/config_fixtures.dart
++++ b/tool/config_fixtures.dart
+@@ -22,10 +22,10 @@ void main() {
+       options: const SingboxConfigOptions(usePlatformDns: true));
+   (config['route']['rules'] as List).addAll(xray.directRules);
+   File('build/config-check/xray.json').writeAsStringSync(jsonEncode(config));
+-  final grpcConfig = buildSingboxConfig(xray.nodes[3],
++  final grpcConfig = buildSingboxConfig(xray.nodes[4],
+       options: const SingboxConfigOptions(usePlatformDns: true));
+   File('build/config-check/xray-grpc.json').writeAsStringSync(jsonEncode(grpcConfig));
+-  final bridge = buildXrayBridge(xray.nodes[2],
++  final bridge = buildXrayBridge(xray.nodes[3],
+       options: const SingboxConfigOptions(usePlatformDns: true));
+   File('build/config-check/xhttp-bridge.json').writeAsStringSync(jsonEncode(bridge.singbox));
+   File('build/config-check/xhttp-xray.json').writeAsStringSync(jsonEncode(bridge.xray));
