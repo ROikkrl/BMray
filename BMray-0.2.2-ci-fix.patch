@@ -1,0 +1,28 @@
+diff --git a/lib/main.dart b/lib/main.dart
+index 227a537..0cef74a 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -453,7 +453,8 @@ class _HomePageState extends State<HomePage> {
+       final endpoints = <String, Map<String, dynamic>>{};
+       if (outbounds is List) {
+         for (final outbound in outbounds) {
+-          final vnext = outbound is Map ? (outbound['settings'] as Map?)?['vnext'] : null;
++          final settings = outbound is Map ? outbound['settings'] : null;
++          final vnext = settings is Map ? settings['vnext'] : null;
+           if (vnext is! List || vnext.isEmpty || vnext.first is! Map) continue;
+           final target = vnext.first as Map;
+           final host = target['address']?.toString();
+diff --git a/lib/xray_bridge.dart b/lib/xray_bridge.dart
+index df0dbd2..3934825 100644
+--- a/lib/xray_bridge.dart
++++ b/lib/xray_bridge.dart
+@@ -36,7 +36,8 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+       : null;
+   // Xray requires the VLESS encryption field even in older client templates.
+   for (final entry in templateOutbounds ?? [outbound]) {
+-    final servers = entry is Map ? (entry['settings'] as Map?)?['vnext'] : null;
++    final settings = entry is Map ? entry['settings'] : null;
++    final servers = settings is Map ? settings['vnext'] : null;
+     if (servers is List) {
+       for (final server in servers) {
+         final users = server is Map ? server['users'] : null;
