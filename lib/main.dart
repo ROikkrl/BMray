@@ -61,6 +61,7 @@ class _HomePageState extends State<HomePage> {
   final _store = SubscriptionStore();
   static const _settingsStorage = FlutterSecureStorage();
   static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
+  static const _cacheLimitKey = 'bmray.subscriptionCacheLimitMb';
   static const _selectedSubscriptionKey = 'bmray.selectedSubscription';
   static const _selectedNodeKey = 'bmray.selectedNode';
   final _hwidInput = TextEditingController();
@@ -81,7 +82,11 @@ class _HomePageState extends State<HomePage> {
   bool _pingBusy = false;
   PingMethod _pingMethod = PingMethod.proxyGet;
   int _proxyTimeoutSeconds = 4;
-  // 0: servers, 1: settings, 2: ping, 3: information, 4: logs, 5: user agent.
+  int _cacheLimitMb = 25;
+  late Future<int> _cacheSize = _store.requestLog.sizeBytes();
+  late Future<String> _requestLogs = _store.requestLog.read();
+  // 0: servers, 1: settings, 2: ping, 3: information, 4: core logs,
+  // 5: user agent, 6: cache, 7: subscription requests.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
   late final Future<String> _appVersion = PackageInfo.fromPlatform().then(
@@ -140,15 +145,23 @@ class _HomePageState extends State<HomePage> {
       String? storedTimeout;
       String? storedSubscription;
       String? storedNode;
+      String? storedCacheLimit;
       try {
         storedTimeout = await _settingsStorage.read(key: _proxyTimeoutKey);
         storedSubscription = await _settingsStorage.read(key: _selectedSubscriptionKey);
         storedNode = await _settingsStorage.read(key: _selectedNodeKey);
+        storedCacheLimit = await _settingsStorage.read(key: _cacheLimitKey);
       } catch (_) {
         // Keep the default when a preference cannot be read.
       }
+      final cacheLimit = int.tryParse(storedCacheLimit ?? '');
+      if (cacheLimit != null && cacheLimit >= 5 && cacheLimit <= 500) {
+        await _store.requestLog.setLimitMb(cacheLimit);
+      }
       if (mounted)
         setState(() {
+          _cacheLimitMb = _store.requestLog.limitMb;
+          _cacheSize = _store.requestLog.sizeBytes();
           _hwidInput.text = identity.hwid;
           _userAgentInput.text = identity.userAgent;
           _subscriptions = subscriptions;
@@ -913,7 +926,8 @@ class _HomePageState extends State<HomePage> {
           const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
         ]) : Text(switch (_pageIndex) {
           1 => 'Настройки', 2 => 'Пинг', 3 => 'Информация',
-          4 => 'Логи', _ => 'User-Agent',
+          4 => 'Логи', 5 => 'User-Agent', 6 => 'Кэш',
+          _ => 'Запросы подписки',
         }),
         actions: [
           if (_pageIndex == 0) IconButton(
@@ -926,7 +940,9 @@ class _HomePageState extends State<HomePage> {
         2 => _pingSettingsView(),
         3 => _informationView(),
         4 => _logsView(),
-        _ => _userAgentView(),
+        5 => _userAgentView(),
+        6 => _cacheView(),
+        _ => _subscriptionRequestsView(),
       }) : SafeArea(child: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
           SizedBox(
@@ -1032,11 +1048,104 @@ class _HomePageState extends State<HomePage> {
     _settingsHeading('Проверка соединения'),
     _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
     _settingsHeading('Приложение'),
+    _settingsEntry('Кэш', 'Журнал запросов подписок и лимит размера',
+        Icons.storage_rounded, 6),
     _settingsEntry('Журнал подключения', 'Логи ядра и VPN',
         Icons.receipt_long_outlined, 4),
     _settingsEntry('Информация', 'Версии и сведения о системе',
         Icons.info_outline_rounded, 3),
   ]);
+
+  Future<void> _setCacheLimit(int megabytes) async {
+    try {
+      await _store.requestLog.setLimitMb(megabytes);
+      await _settingsStorage.write(key: _cacheLimitKey, value: '$megabytes');
+      if (mounted) setState(() => _cacheSize = _store.requestLog.sizeBytes());
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Не удалось изменить размер кэша.');
+    }
+  }
+
+  Widget _cacheView() => ListView(padding: const EdgeInsets.all(16), children: [
+    const Text('Кэш', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+    const SizedBox(height: 12),
+    const Text('В кэше хранится журнал запросов подписок: время, адрес сервера '
+        'без секретного пути и параметров, отправленные имена заголовков, '
+        'User-Agent, HTTP-статус, имена заголовков ответа и формат содержимого. '
+        'Для Base64 записывается число ссылок и их протоколы; для JSON — '
+        'ключи и число выходов. Сами ссылки, ключи, HWID, Cookie и тело ответа '
+        'в журнал не записываются. Исходные подписки и выбранный сервер '
+        'хранятся отдельно; очистка кэша их не удалит. Android и iOS могут '
+        'очистить временный кэш автоматически. Лимит относится к этому '
+        'журналу; журнал ядра и системные временные файлы в него не входят.'),
+    const SizedBox(height: 20),
+    Text('Максимальный размер: $_cacheLimitMb МБ',
+        style: const TextStyle(fontWeight: FontWeight.w600)),
+    Slider(
+      min: 5, max: 500, divisions: 99,
+      value: _cacheLimitMb.toDouble(),
+      label: '$_cacheLimitMb МБ',
+      onChanged: (value) => setState(() =>
+          _cacheLimitMb = (value / 5).round() * 5),
+      onChangeEnd: (value) => _setCacheLimit((value / 5).round() * 5),
+    ),
+    FutureBuilder<int>(future: _cacheSize, builder: (context, snapshot) =>
+        Text('Занято: ${snapshot.hasData ? _formatTraffic(snapshot.data) : '…'}')),
+    const SizedBox(height: 12),
+    ListTile(
+      leading: const Icon(Icons.receipt_long_outlined),
+      title: const Text('Журнал запросов подписки'),
+      subtitle: const Text('Просмотреть и скопировать последние записи'),
+      trailing: const Icon(Icons.chevron_right_rounded),
+      onTap: () => setState(() {
+        _requestLogs = _store.requestLog.read();
+        _pageIndex = 7;
+      }),
+    ),
+    OutlinedButton.icon(
+      icon: const Icon(Icons.delete_outline_rounded),
+      label: const Text('Очистить журнал запросов'),
+      onPressed: () async {
+        await _store.requestLog.clear();
+        if (mounted) setState(() {
+          _cacheSize = _store.requestLog.sizeBytes();
+          _requestLogs = _store.requestLog.read();
+        });
+      },
+    ),
+  ]);
+
+  Widget _subscriptionRequestsView() => FutureBuilder<String>(
+    future: _requestLogs,
+    builder: (context, snapshot) {
+      final logs = snapshot.data ?? '';
+      return Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+        const Text('Обновите подписку, затем скопируйте журнал и отправьте его '
+            'для диагностики. Секретные значения заголовков и ссылки скрыты.'),
+        const SizedBox(height: 8),
+        Row(children: [
+          const Expanded(child: Text('Последние 256 КБ журнала',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+          IconButton(tooltip: 'Обновить',
+              onPressed: () => setState(() => _requestLogs = _store.requestLog.read()),
+              icon: const Icon(Icons.refresh_rounded)),
+          IconButton(tooltip: 'Копировать для диагностики',
+              onPressed: logs.isEmpty ? null : () =>
+                  Clipboard.setData(ClipboardData(text: logs)),
+              icon: const Icon(Icons.copy_rounded)),
+        ]),
+        const SizedBox(height: 8),
+        Expanded(child: Card(child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: SingleChildScrollView(child: SelectableText(
+            snapshot.hasError ? 'Не удалось прочитать кэш.' :
+            snapshot.connectionState != ConnectionState.done ? 'Загрузка…' :
+            logs.isEmpty ? 'Журнал пуст. Обновите подписку и вернитесь сюда.' : logs,
+          )),
+        ))),
+      ]));
+    },
+  );
 
   Widget _settingsHeading(String title) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 28, 20, 8),
@@ -1054,6 +1163,8 @@ class _HomePageState extends State<HomePage> {
         trailing: const Icon(Icons.chevron_right_rounded),
         onTap: () => setState(() {
           _pageIndex = page;
+          if (page == 6) _cacheSize = _store.requestLog.sizeBytes();
+          if (page == 7) _requestLogs = _store.requestLog.read();
           if (page == 4) _logs = _vpn.readLogs();
         }),
       ),

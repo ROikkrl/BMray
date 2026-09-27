@@ -1,0 +1,55 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:bmray/subscription_request_cache.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test('diagnostic summary identifies Base64 without exposing share links', () {
+    const link = 'vless://00000000-0000-4000-8000-000000000001@'
+        '127.0.0.1:237?security=tls#Auto';
+    final summary = subscriptionBodySummary(base64Encode(utf8.encode('$link\n'
+        'hysteria2://password@vpn.example.com:443#Test')));
+    expect(summary['format'], 'base64-links');
+    expect(summary['linkSchemes'], {'vless': 1, 'hysteria2': 1});
+    expect(summary['loopbackLinks'], 1);
+    expect(jsonEncode(summary), isNot(contains('password')));
+    expect(jsonEncode(summary), isNot(contains('00000000')));
+    final target = subscriptionRequestTarget(
+        Uri.parse('https://example.com/private-token?key=secret'));
+    expect(target['host'], 'example.com');
+    expect(jsonEncode(target), isNot(contains('private-token')));
+    expect(jsonEncode(target), isNot(contains('secret')));
+  });
+
+  test('JSON diagnostic summary recognizes generated Xray balancer', () {
+    final summary = subscriptionBodySummary(jsonEncode({
+      'remarks': 'Auto', 'outbounds': [
+        {'tag': 'WIFI_', 'protocol': 'vless'},
+        {'tag': 'direct', 'protocol': 'freedom'},
+      ],
+      'routing': {'balancers': [{'tag': 'auto_wifi'}]},
+    }));
+    expect(summary['format'], 'json');
+    expect(summary['outboundCount'], 2);
+    expect(summary['balancerCount'], 1);
+  });
+
+  test('request journal stays within configured cache limit', () async {
+    final dir = await Directory.systemTemp.createTemp('bmray-cache-test');
+    try {
+      final cache = SubscriptionRequestCache(directory: () async => dir);
+      await cache.setLimitMb(5);
+      for (var i = 0; i < 70; i++) {
+        await cache.append({'event': 'synthetic', 'index': i,
+          'data': 'a' * 80000});
+      }
+      expect(await cache.sizeBytes(), lessThanOrEqualTo(5 * 1024 * 1024));
+      expect(await cache.read(), contains('"index":69'));
+      await cache.clear();
+      expect(await cache.sizeBytes(), 0);
+    } finally {
+      await dir.delete(recursive: true);
+    }
+  });
+}

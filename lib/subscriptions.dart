@@ -10,6 +10,7 @@ import 'subscription_metadata.dart';
 import 'subscription_identity.dart';
 import 'xray_subscription.dart';
 import 'remnawave_template.dart';
+import 'subscription_request_cache.dart';
 
 class Subscription {
   Subscription({
@@ -96,6 +97,7 @@ class SubscriptionStore {
   static const _storage = FlutterSecureStorage();
   static const _key = 'bmray.subscriptions.v1';
   SubscriptionIdentity? identity;
+  final requestLog = SubscriptionRequestCache();
 
   Future<List<Subscription>> load() async {
     final value = await _storage.read(key: _key);
@@ -173,6 +175,11 @@ class SubscriptionStore {
     }
     final downloaded = await _download(normalized);
     final parsed = _parse(downloaded.body);
+    await requestLog.append({'event': 'parse', 'id': downloaded.id,
+      'format': subscriptionBodySummary(downloaded.body)['format'],
+      'nodeCount': parsed.nodes.length,
+      'autoNodeCount': parsed.nodes.where((node) => node['type'] == 'auto').length,
+    });
     if (parsed.nodes.isEmpty) {
       throw const FormatException(
         'У подписки нет распознанных серверов. Попробуйте формат sing-box, V2Ray или Clash в боте.',
@@ -204,6 +211,11 @@ class SubscriptionStore {
     }
     final downloaded = await _download(Uri.parse(item.url));
     final parsed = _parse(downloaded.body);
+    await requestLog.append({'event': 'parse', 'id': downloaded.id,
+      'format': subscriptionBodySummary(downloaded.body)['format'],
+      'nodeCount': parsed.nodes.length,
+      'autoNodeCount': parsed.nodes.where((node) => node['type'] == 'auto').length,
+    });
     if (parsed.nodes.isEmpty)
       throw const FormatException(
         'В обновлённой подписке нет распознанных серверов.',
@@ -306,10 +318,11 @@ class SubscriptionStore {
     }
   }
 
-  Future<({String body, String? title, String? announce,
+  Future<({String id, String body, String? title, String? announce,
       String? userInfo, String? updateInterval})> _download(Uri initial) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
+    final requestId = DateTime.now().microsecondsSinceEpoch.toString();
     try {
       var uri = initial;
       for (var redirect = 0; redirect < 4; redirect++) {
@@ -321,16 +334,52 @@ class SubscriptionStore {
         final request = await client
             .getUrl(uri)
             .timeout(const Duration(seconds: 15));
+        final stopwatch = Stopwatch()..start();
         request.followRedirects = false;
         final headers = (identity ??= await SubscriptionIdentity.load()).requestHeaders;
         for (final entry in headers.entries) {
           request.headers.set(entry.key, entry.value);
         }
+        final requestHeaderNames = <String>[];
+        request.headers.forEach((name, values) =>
+            requestHeaderNames.add(name.toLowerCase()));
+        requestHeaderNames.sort();
+        await requestLog.append({
+          'event': 'request', 'id': requestId, 'hop': redirect,
+          'method': 'GET', 'target': subscriptionRequestTarget(uri),
+          'requestHeaderNames': requestHeaderNames,
+          'userAgent': headers[HttpHeaders.userAgentHeader],
+          'deviceOs': headers['x-device-os'],
+          'deviceModel': headers['x-device-model'],
+          'hwidSent': headers.containsKey('x-hwid'),
+          'cookieSent': headers.containsKey(HttpHeaders.cookieHeader),
+        });
         final response = await request.close().timeout(
           const Duration(seconds: 20),
         );
+        final responseHeaders = <String>[];
+        response.headers.forEach((name, values) => responseHeaders.add(name));
+        responseHeaders.sort();
+        final responseInfo = <String, dynamic>{
+          'event': 'response', 'id': requestId, 'hop': redirect,
+          'status': response.statusCode,
+          'headersElapsedMs': stopwatch.elapsedMilliseconds,
+          'responseHeaderNames': responseHeaders,
+          'contentType': response.headers.contentType?.mimeType,
+          'contentEncoding': response.headers.value(HttpHeaders.contentEncodingHeader),
+          'profileTitlePresent': response.headers.value('profile-title') != null,
+          'announcePresent': response.headers.value('announce') != null,
+          'trafficHeaderPresent': response.headers.value('subscription-userinfo') != null,
+          'updateIntervalHours': subscriptionUpdateHours(
+              response.headers.value('profile-update-interval')),
+          'providerIdPresent': response.headers.value('x-provider-id') != null,
+        };
         if ([301, 302, 303, 307, 308].contains(response.statusCode)) {
           final location = response.headers.value(HttpHeaders.locationHeader);
+          if (location != null) {
+            responseInfo['redirectTarget'] = subscriptionRequestTarget(uri.resolve(location));
+          }
+          await requestLog.append(responseInfo);
           await response.drain<void>();
           if (location == null)
             throw const FormatException('Пустая переадресация подписки.');
@@ -338,6 +387,7 @@ class SubscriptionStore {
           continue;
         }
         if (response.statusCode != 200) {
+          await requestLog.append(responseInfo);
           await response.drain<void>();
           throw FormatException(
             'Сервер подписки ответил: HTTP ${response.statusCode}.',
@@ -354,12 +404,22 @@ class SubscriptionStore {
             );
           }
         }
-        return (body: utf8.decode(bytes), title: response.headers.value('profile-title'),
+        final body = utf8.decode(bytes);
+        responseInfo['bodyBytes'] = bytes.length;
+        responseInfo['totalElapsedMs'] = stopwatch.elapsedMilliseconds;
+        responseInfo['bodySummary'] = subscriptionBodySummary(body);
+        await requestLog.append(responseInfo);
+        return (id: requestId, body: body, title: response.headers.value('profile-title'),
             announce: response.headers.value('announce'),
             userInfo: response.headers.value('subscription-userinfo'),
             updateInterval: response.headers.value('profile-update-interval'));
       }
       throw const FormatException('Слишком много переадресаций подписки.');
+    } catch (error) {
+      await requestLog.append({'event': 'error', 'id': requestId,
+        'target': subscriptionRequestTarget(initial),
+        'errorType': error.runtimeType.toString()});
+      rethrow;
     } finally {
       client.close(force: true);
     }
