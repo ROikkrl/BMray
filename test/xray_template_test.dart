@@ -200,6 +200,18 @@ void main() {
     expect(decodedSubscriptionResponse(body), '$realityLink\n$realityLink');
   });
 
+  test('only Base64 subscriptions with local template hosts trigger JSON retry', () {
+    const local = 'vless://00000000-0000-4000-8000-000000000001@127.0.0.1:237'
+        '?type=xhttp&security=tls#Auto';
+    const remote = 'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
+        '?type=xhttp&security=reality#Remote';
+    expect(needsXrayJsonRetry(base64Encode(utf8.encode('$remote\n$local'))), true);
+    expect(needsXrayJsonRetry(base64Encode(utf8.encode(remote))), false);
+    expect(needsXrayJsonRetry('$remote\n$local'), false);
+    expect(needsXrayJsonRetry(xrayFixture), false);
+    expect(parseXrayTemplate(xrayFixture)!.nodes.first['type'], 'auto');
+  });
+
   test('server subtitles use imported transport and security', () {
     final tcp = parseShareLink(realityLink)!;
     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');

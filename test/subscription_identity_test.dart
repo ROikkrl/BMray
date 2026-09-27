@@ -15,6 +15,10 @@ void main() {
     expect(headers['x-hwid'], identity.hwid);
     expect(headers['user-agent'], 'BMray/android/0.2.4');
     expect(headers['cookie'], 'BMray=BMray-0123456789');
+    expect(identity.xrayJsonUserAgent, 'Happ BMray/android/0.2.4');
+    expect(RegExp(r'^happ', caseSensitive: false)
+        .hasMatch(identity.xrayJsonUserAgent), true);
+    expect(headers['user-agent'], 'BMray/android/0.2.4');
     expect(SubscriptionIdentity.validUserAgent('BMray\r\nExtra: bad'), false);
   });
 

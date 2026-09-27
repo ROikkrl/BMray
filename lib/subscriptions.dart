@@ -173,7 +173,7 @@ class SubscriptionStore {
         'Вставьте HTTPS-подписку или ссылку сервера vless://, vmess://, trojan://, ss://, hy2://, tuic://',
       );
     }
-    final downloaded = await _download(normalized);
+    final downloaded = await _downloadPreferXrayJson(normalized);
     final parsed = _parse(downloaded.body);
     await requestLog.append({'event': 'parse', 'id': downloaded.id,
       'format': subscriptionBodySummary(downloaded.body)['format'],
@@ -209,7 +209,7 @@ class SubscriptionStore {
         'Это отдельный сервер. Для изменения импортируйте новую ссылку.',
       );
     }
-    final downloaded = await _download(Uri.parse(item.url));
+    final downloaded = await _downloadPreferXrayJson(Uri.parse(item.url));
     final parsed = _parse(downloaded.body);
     await requestLog.append({'event': 'parse', 'id': downloaded.id,
       'format': subscriptionBodySummary(downloaded.body)['format'],
@@ -319,7 +319,31 @@ class SubscriptionStore {
   }
 
   Future<({String id, String body, String? title, String? announce,
-      String? userInfo, String? updateInterval})> _download(Uri initial) async {
+      String? userInfo, String? updateInterval})> _downloadPreferXrayJson(
+          Uri initial) async {
+    final original = await _download(initial);
+    if (!needsXrayJsonRetry(original.body)) return original;
+    await requestLog.append({'event': 'compatibility', 'id': original.id,
+      'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
+    try {
+      final retried = await _download(initial, requestXrayJson: true);
+      final json = retried.body.trimLeft();
+      final usable = (json.startsWith('{') || json.startsWith('[')) &&
+          _parse(retried.body).nodes.isNotEmpty;
+      await requestLog.append({'event': 'compatibility', 'id': original.id,
+        'retryId': retried.id, 'result': usable ? 'xray-json' : 'original-kept',
+        'format': subscriptionBodySummary(retried.body)['format']});
+      return usable ? retried : original;
+    } catch (error) {
+      await requestLog.append({'event': 'compatibility', 'id': original.id,
+        'result': 'original-kept', 'retryError': error.runtimeType.toString()});
+      return original;
+    }
+  }
+
+  Future<({String id, String body, String? title, String? announce,
+      String? userInfo, String? updateInterval})> _download(Uri initial,
+          {bool requestXrayJson = false}) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     final requestId = DateTime.now().microsecondsSinceEpoch.toString();
@@ -336,7 +360,12 @@ class SubscriptionStore {
             .timeout(const Duration(seconds: 15));
         final stopwatch = Stopwatch()..start();
         request.followRedirects = false;
-        final headers = (identity ??= await SubscriptionIdentity.load()).requestHeaders;
+        final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
+        final headers = subscriptionIdentity.requestHeaders;
+        if (requestXrayJson) {
+          headers[HttpHeaders.userAgentHeader] =
+              subscriptionIdentity.xrayJsonUserAgent;
+        }
         for (final entry in headers.entries) {
           request.headers.set(entry.key, entry.value);
         }
@@ -346,6 +375,7 @@ class SubscriptionStore {
         requestHeaderNames.sort();
         await requestLog.append({
           'event': 'request', 'id': requestId, 'hop': redirect,
+          'xrayJsonRetry': requestXrayJson,
           'method': 'GET', 'target': subscriptionRequestTarget(uri),
           'requestHeaderNames': requestHeaderNames,
           'userAgent': headers[HttpHeaders.userAgentHeader],
@@ -424,6 +454,14 @@ class SubscriptionStore {
       client.close(force: true);
     }
   }
+}
+
+/// Base64 links pointing to the phone itself need the server-generated
+/// Remnawave template, which the panel returns to Happ-class clients.
+bool needsXrayJsonRetry(String body) {
+  final summary = subscriptionBodySummary(body);
+  return summary['format'] == 'base64-links' &&
+      (summary['loopbackLinks'] as int? ?? 0) > 0;
 }
 
 /// Gives the inspector a readable second view for Base64 subscriptions.

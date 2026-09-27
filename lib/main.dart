@@ -1177,6 +1177,11 @@ class _HomePageState extends State<HomePage> {
     const SizedBox(height: 12),
     const Text('BMray отправляет постоянный HWID в x-hwid и Cookie BMray. '
       'Изменение HWID может занять новое место в лимите устройств панели.'),
+    const SizedBox(height: 8),
+    const Text('Для подписки Base64 с локальным адресом АвтоБС BMray '
+      'повторяет запрос с User-Agent «Happ BMray/…»: правило Remnawave '
+      'выдаёт готовый XRAY_JSON. В остальных запросах действует '
+      'указанный ниже User-Agent.'),
     const SizedBox(height: 18),
     TextField(controller: _hwidInput, autocorrect: false,
       decoration: const InputDecoration(labelText: 'HWID',

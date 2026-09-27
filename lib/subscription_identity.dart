@@ -60,4 +60,9 @@ class SubscriptionIdentity {
     'x-device-model': 'BMray',
     HttpHeaders.cookieHeader: 'BMray=$hwid',
   };
+
+  /// The Remnawave XRAY_JSON rule requires the User-Agent to *start* with Happ.
+  /// Only the retry for a Base64 subscription with local template hosts uses it.
+  String get xrayJsonUserAgent =>
+      userAgent.toLowerCase().startsWith('happ') ? userAgent : 'Happ $userAgent';
 }
