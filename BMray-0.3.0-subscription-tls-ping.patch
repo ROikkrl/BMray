@@ -1,0 +1,515 @@
+diff --git a/.github/workflows/android.yml b/.github/workflows/android.yml
+index 5e1ca2e..f923ac2 100644
+--- a/.github/workflows/android.yml
++++ b/.github/workflows/android.yml
+@@ -68,6 +68,8 @@ jobs:
+           build/reality-test/xray run -test -config build/config-check/xhttp-xray.json
+           build/reality-test/xray run -test -config build/config-check/hysteria-xray.json
+           build/reality-test/xray run -test -config build/config-check/auto-xray.json
++          build/reality-test/xray run -test -config build/config-check/tcp-tls-xray.json
++          build/reality-test/xray run -test -config build/config-check/xhttp-tls-xray.json
+       - name: Test proxy GET through sing-box outbound
+         run: (cd build/sing-box && go test -tags with_utls -run TestBMrayProbeProxyGET ./experimental/libbox)
+       - uses: actions/cache@v4
+diff --git a/README.md b/README.md
+index b700bc3..44fcc12 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,9 @@
+ # BMray
+ 
++Текущая версия задаётся в `pubspec.yaml`. Для следующего релиза запустите
++`python3 scripts/next_version.py`: версии идут от 0.3.0 до 0.3.9, затем
++0.4.0; после 0.4.9 следует 0.5.0. Номер сборки после `+` растёт на единицу.
++
+ Версия 0.1.7: под названиями серверов показаны протокол, транспорт и защита
+ (например, `VLESS / XHTTP / REALITY`). Клиентский Xray JSON с Hysteria2
+ использует встроенный Xray 26.9.9 на Android. В версии 0.2.0 подписки и серверы
+diff --git a/lib/main.dart b/lib/main.dart
+index 1d2d50a..d88ba16 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -107,6 +107,9 @@ class _HomePageState extends State<HomePage> {
+     return index < 0 ? 0 : index;
+   }
+ 
++  bool _useXrayForNode(Map<String, dynamic> node) =>
++      usesXray(node) || (Platform.isAndroid && prefersXrayTls(node));
++
+   @override
+   void initState() {
+     super.initState();
+@@ -366,11 +369,11 @@ class _HomePageState extends State<HomePage> {
+       if (node['_unsupported_reason'] != null) {
+         throw FormatException(node['_unsupported_reason'].toString());
+       }
+-      final bridge = usesXray(node) && Platform.isAndroid
++      final bridge = _useXrayForNode(node) && Platform.isAndroid
+           ? buildXrayBridge(node,
+               options: const SingboxConfigOptions(usePlatformDns: true))
+           : null;
+-      if (usesXray(node) && bridge == null) {
++      if (_useXrayForNode(node) && bridge == null) {
+         throw const FormatException('Этот профиль Xray доступен только на Android.');
+       }
+       final config = bridge?.singbox ?? buildSingboxConfig(node,
+@@ -565,7 +568,7 @@ class _HomePageState extends State<HomePage> {
+           'без отдельного локального прокси. Сравните ответ подписки с конфигом HAPP.';
+     }
+     try {
+-      if (usesXray(node)) {
++      if (_useXrayForNode(node)) {
+         final bridge = buildXrayBridge(node,
+             options: const SingboxConfigOptions(usePlatformDns: true));
+         tabs.add(JsonConfigTab('Xray: подключение', _formatJson(bridge.xray)));
+@@ -743,11 +746,11 @@ class _HomePageState extends State<HomePage> {
+         if (node['_unsupported_reason'] != null) {
+           return (delay: null, reason: node['_unsupported_reason'].toString());
+         }
+-        if (usesXray(node) && !Platform.isAndroid) {
++        if (_useXrayForNode(node) && !Platform.isAndroid) {
+           return (delay: null, reason: 'Этот профиль Xray доступен только на Android');
+         }
+         if (node['type'] == 'auto') return _probeAutoProxy(node);
+-        final bridge = usesXray(node) ? buildXrayBridge(node, probe: true,
++        final bridge = _useXrayForNode(node) ? buildXrayBridge(node, probe: true,
+             options: const SingboxConfigOptions(usePlatformDns: true)) : null;
+         final config = bridge?.singbox ?? buildSingboxConfig(node,
+             options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
+@@ -781,6 +784,9 @@ class _HomePageState extends State<HomePage> {
+         await _waitForDisconnect();
+         await Future<void>.delayed(const Duration(milliseconds: 250));
+       }
++      if (Platform.isAndroid) {
++        await _prepareNetworkForPing(item, indices);
++      }
+       if (await _vpn.otherVpnActive()) {
+         throw const FormatException('Выключите VPN другого приложения в настройках Android перед проверкой.');
+       }
+@@ -805,6 +811,65 @@ class _HomePageState extends State<HomePage> {
+     }
+   }
+ 
++  Future<void> _prepareNetworkForPing(Subscription item, List<int> indices) async {
++    final candidates = <Map<String, dynamic>>[
++      for (final index in indices)
++        if (index >= 0 && index < item.nodes.length) item.nodes[index],
++      for (final subscription in _subscriptions) ...subscription.nodes,
++    ];
++    String? configJson;
++    String? xrayJson;
++    for (final node in candidates) {
++      final host = node['server']?.toString() ?? '';
++      if (node['_unsupported_reason'] != null || host.isEmpty ||
++          host == 'localhost' ||
++          InternetAddress.tryParse(host)?.isLoopback == true) continue;
++      try {
++        final bridge = _useXrayForNode(node)
++            ? buildXrayBridge(node,
++                options: const SingboxConfigOptions(usePlatformDns: true))
++            : null;
++        final config = bridge?.singbox ?? buildSingboxConfig(node,
++            options: const SingboxConfigOptions(usePlatformDns: true));
++        final candidateJson = jsonEncode(config);
++        if (await _vpn.validateConfig(candidateJson) != null) continue;
++        configJson = candidateJson;
++        xrayJson = bridge == null ? null : jsonEncode(bridge.xray);
++        break;
++      } catch (_) {
++        // A different imported server may still be suitable for preparation.
++      }
++    }
++    if (configJson == null) {
++      if (await _vpn.otherVpnActive()) {
++        throw const FormatException('Нет пригодного сервера для смены VPN перед пингом.');
++      }
++      return;
++    }
++    var attempted = false;
++    try {
++      attempted = true;
++      await _vpn.start(configJson, name: 'BMray', xrayConfig: xrayJson);
++      for (var attempt = 0; attempt < 100; attempt++) {
++        final status = await _vpn.currentStatus();
++        if (status.state == VpnState.connected) break;
++        if (status.state == VpnState.error) {
++          throw FormatException(status.message ?? 'Не удалось подготовить VPN для пинга.');
++        }
++        if (attempt == 99) {
++          throw const FormatException('VPN не запустился для подготовки пинга.');
++        }
++        await Future<void>.delayed(const Duration(milliseconds: 100));
++      }
++    } finally {
++      if (attempted) {
++        await _vpn.stop();
++        await _waitForDisconnect();
++      }
++    }
++    await Future<void>.delayed(const Duration(milliseconds: 250));
++  }
++
+   String _safeLogs(String logs) => logs
+         .replaceAll(
+           RegExp(r'(?:vless|vmess|trojan|ss|hy2|hysteria2|tuic)://\S+'),
+@@ -1013,10 +1078,12 @@ class _HomePageState extends State<HomePage> {
+     _settingsHeading('Подписка'),
+     _settingsEntry('User-Agent', 'HWID, User-Agent и Cookie BMray',
+         Icons.badge_outlined, 5),
++    _settingsEntry('Логи запросов подписки', 'HTTP-ответы и выбор формата подписки',
++        Icons.receipt_long_outlined, 7),
+     _settingsHeading('Проверка соединения'),
+     _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
+     _settingsHeading('Приложение'),
+-    _settingsEntry('Кэш', 'Журнал запросов подписок и лимит размера',
++    _settingsEntry('Кэш', 'Лимит размера и очистка журнала',
+         Icons.storage_rounded, 6),
+     _settingsEntry('Журнал подключения', 'Логи ядра и VPN',
+         Icons.receipt_long_outlined, 4),
+@@ -1060,16 +1127,6 @@ class _HomePageState extends State<HomePage> {
+     FutureBuilder<int>(future: _cacheSize, builder: (context, snapshot) =>
+         Text('Занято: ${snapshot.hasData ? _formatTraffic(snapshot.data) : '…'}')),
+     const SizedBox(height: 12),
+-    ListTile(
+-      leading: const Icon(Icons.receipt_long_outlined),
+-      title: const Text('Журнал запросов подписки'),
+-      subtitle: const Text('Просмотреть и скопировать последние записи'),
+-      trailing: const Icon(Icons.chevron_right_rounded),
+-      onTap: () => setState(() {
+-        _requestLogs = _store.requestLog.read();
+-        _pageIndex = 7;
+-      }),
+-    ),
+     OutlinedButton.icon(
+       icon: const Icon(Icons.delete_outline_rounded),
+       label: const Text('Очистить журнал запросов'),
+@@ -1147,9 +1204,10 @@ class _HomePageState extends State<HomePage> {
+       'Изменение HWID может занять новое место в лимите устройств панели.'),
+     const SizedBox(height: 8),
+     const Text('Для подписки Base64 с локальным адресом АвтоБС BMray '
+-      'повторяет запрос с User-Agent «Happ BMray/…»: правило Remnawave '
+-      'выдаёт готовый XRAY_JSON. В остальных запросах действует '
+-      'указанный ниже User-Agent.'),
++      'повторяет запрос с User-Agent «Happ/версия BMray/…»: панель может '
++      'выдать готовый XRAY_JSON. В остальных запросах действует '
++      'указанный ниже User-Agent. Если он уже начинается с Happ, повторного '
++      'запроса не будет.'),
+     const SizedBox(height: 18),
+     TextField(controller: _hwidInput, autocorrect: false,
+       decoration: const InputDecoration(labelText: 'HWID',
+diff --git a/lib/subscription_identity.dart b/lib/subscription_identity.dart
+index 176ec38..22fde80 100644
+--- a/lib/subscription_identity.dart
++++ b/lib/subscription_identity.dart
+@@ -14,6 +14,8 @@ class SubscriptionIdentity {
+   final String hwid;
+   final String userAgent;
+ 
++  bool get isHappUserAgent => userAgent.toLowerCase().startsWith('happ');
++
+   static String defaultUserAgentFor(String platform, String version) =>
+       'BMray/$platform/$version';
+ 
+@@ -63,6 +65,10 @@ class SubscriptionIdentity {
+ 
+   /// The Remnawave XRAY_JSON rule requires the User-Agent to *start* with Happ.
+   /// Only the retry for a Base64 subscription with local template hosts uses it.
+-  String get xrayJsonUserAgent =>
+-      userAgent.toLowerCase().startsWith('happ') ? userAgent : 'Happ $userAgent';
++  String get xrayJsonUserAgent {
++    if (isHappUserAgent) return userAgent;
++    final version = RegExp(r'/([0-9]+(?:\.[0-9]+){1,2})$')
++        .firstMatch(userAgent)?.group(1) ?? '1.0.0';
++    return 'Happ/$version $userAgent';
++  }
+ }
+diff --git a/lib/subscriptions.dart b/lib/subscriptions.dart
+index 68f2fed..1db728a 100644
+--- a/lib/subscriptions.dart
++++ b/lib/subscriptions.dart
+@@ -331,6 +331,12 @@ class SubscriptionStore {
+           Uri initial) async {
+     final original = await _download(initial);
+     if (!needsXrayJsonRetry(original.body)) return original;
++    final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
++    if (subscriptionIdentity.isHappUserAgent) {
++      await requestLog.append({'event': 'compatibility', 'id': original.id,
++        'reason': 'base64-loopback-template', 'result': 'custom-happ-agent-kept'});
++      return original;
++    }
+     await requestLog.append({'event': 'compatibility', 'id': original.id,
+       'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
+     try {
+@@ -377,6 +383,10 @@ class SubscriptionStore {
+         for (final entry in headers.entries) {
+           request.headers.set(entry.key, entry.value);
+         }
++        if (requestXrayJson || subscriptionIdentity.isHappUserAgent) {
++          request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
++          request.headers.set('Pragma', 'no-cache');
++        }
+         final requestHeaderNames = <String>[];
+         request.headers.forEach((name, values) =>
+             requestHeaderNames.add(name.toLowerCase()));
+diff --git a/lib/xray_bridge.dart b/lib/xray_bridge.dart
+index 92b891f..0e40851 100644
+--- a/lib/xray_bridge.dart
++++ b/lib/xray_bridge.dart
+@@ -16,12 +16,24 @@ bool usesXray(Map<String, dynamic> node) =>
+     (node['type'] == 'vless' && node['transport'] is Map &&
+     (node['transport'] as Map)['type'] == 'xhttp');
+ 
++/// Plain VLESS/TCP/TLS can use the same Xray core as XHTTP on Android.
++/// Other platforms continue using the sing-box outbound.
++bool prefersXrayTls(Map<String, dynamic> node) {
++  if (node['type'] != 'vless' || node['tls'] is! Map) return false;
++  final tls = node['tls'] as Map;
++  return tls['enabled'] == true && tls['reality'] is! Map &&
++      (node['transport'] is! Map ||
++          (node['transport'] as Map)['type'] == 'tcp');
++}
++
+ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+   bool probe = false,
+   String? probeOutboundTag,
+   SingboxConfigOptions options = const SingboxConfigOptions(),
+ }) {
+-  if (!usesXray(node)) throw const FormatException('Ожидался профиль Xray');
++  if (!usesXray(node) && !prefersXrayTls(node)) {
++    throw const FormatException('Ожидался профиль Xray');
++  }
+   final random = Random.secure();
+   final port = 20000 + random.nextInt(35000);
+   final user = 'bmray';
+@@ -39,6 +51,18 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
+   for (final entry in templateOutbounds ?? [outbound]) {
+     final settings = entry is Map ? entry['settings'] : null;
+     final servers = settings is Map ? settings['vnext'] : null;
++    final stream = entry is Map ? entry['streamSettings'] : null;
++    if (stream is Map && stream['security'] == 'tls' &&
++        stream['tlsSettings'] is Map) {
++      final tls = stream['tlsSettings'] as Map;
++      if (tls['serverName']?.toString().isNotEmpty != true) {
++        final xhttp = stream['xhttpSettings'];
++        final transportHost = xhttp is Map ? xhttp['host']?.toString() : null;
++        if (transportHost != null && transportHost.isNotEmpty) {
++          tls['serverName'] = transportHost;
++        }
++      }
++    }
+     if (servers is List) {
+       for (final server in servers) {
+         final users = server is Map ? server['users'] : null;
+diff --git a/lib/xray_subscription.dart b/lib/xray_subscription.dart
+index fc26632..c9cf912 100644
+--- a/lib/xray_subscription.dart
++++ b/lib/xray_subscription.dart
+@@ -58,7 +58,8 @@ XrayTemplate? parseXrayTemplate(String content) {
+       continue;
+     }
+     if (entry['protocol'] != 'vless') {
+-      if (entry['protocol'] != 'freedom' && entry['protocol'] != 'blackhole') {
++      if (!const {'freedom', 'blackhole', 'dns'}
++          .contains(entry['protocol'])) {
+         unsupported.add(entry['protocol']?.toString() ?? 'unknown');
+       }
+       continue;
+diff --git a/packages/vpn_plugin/android/src/main/kotlin/dev/flexvpn/flutter_singbox_vpn/FlutterSingboxVpnPlugin.kt b/packages/vpn_plugin/android/src/main/kotlin/dev/flexvpn/flutter_singbox_vpn/FlutterSingboxVpnPlugin.kt
+index 98c018c..32b49ec 100644
+--- a/packages/vpn_plugin/android/src/main/kotlin/dev/flexvpn/flutter_singbox_vpn/FlutterSingboxVpnPlugin.kt
++++ b/packages/vpn_plugin/android/src/main/kotlin/dev/flexvpn/flutter_singbox_vpn/FlutterSingboxVpnPlugin.kt
+@@ -111,7 +111,14 @@ class FlutterSingboxVpnPlugin :
+                 startVpnFlow()
+                 result.success(null)
+             }
+-            "stop" -> { stopVpn(); result.success(null) }
++            "stop" -> {
++                // The user may cancel while Android's VPN permission dialog is open.
++                // A late consent result must not start a tunnel after stop().
++                pendingConfig = null
++                pendingXrayConfig = null
++                stopVpn()
++                result.success(null)
++            }
+             "otherVpnActive" -> {
+                 val cm = context.getSystemService(ConnectivityManager::class.java)
+                 val activeVpn = cm.activeNetwork?.let { network ->
+@@ -177,6 +184,8 @@ class FlutterSingboxVpnPlugin :
+                         val detail = e.message?.lowercase() ?: ""
+                         val reason = when {
+                             "reality verification failed" in detail -> "Ошибка проверки REALITY"
++                            "certificate" in detail || "x509" in detail -> "Ошибка сертификата TLS или SNI"
++                            "tls" in detail && "handshake" in detail -> "Ошибка TLS handshake"
+                             "timeout" in detail || "deadline exceeded" in detail -> "Тайм-аут"
+                             "unknown utls" in detail || "fingerprint" in detail -> "Неподдерживаемый fingerprint"
+                             "dns" in detail || "lookup" in detail -> "Ошибка DNS"
+diff --git a/pubspec.yaml b/pubspec.yaml
+index e107d35..7d0685c 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: bmray
+ description: BMray — клиент подписок sing-box для Android и iOS.
+ publish_to: none
+-version: 0.2.11+22
++version: 0.3.0+23
+ 
+ environment:
+   sdk: '>=3.12.0 <4.0.0'
+diff --git a/release-notes/v0.3.0.md b/release-notes/v0.3.0.md
+new file mode 100644
+index 0000000..76e2783
+--- /dev/null
++++ b/release-notes/v0.3.0.md
+@@ -0,0 +1,11 @@
++## BMray 0.3.0
++
++- Логи запросов подписок доступны напрямую из настроек.
++- Пользовательский User-Agent, начинающийся с `happ`, отправляется без изменения и без повторного запроса XRAY_JSON.
++- При обнаружении локального адреса `127.0.0.1` или `::1` в Base64-подписке клиент один раз повторяет запрос как `Happ/<версия> BMray/...`. Название хоста не влияет на проверку.
++- Служебный DNS outbound в XRAY_JSON не отображается как неподдерживаемый сервер.
++- VLESS/TCP/TLS на Android использует Xray. Для VLESS/XHTTP/TLS пустой SNI в готовом Xray outbound заполняется из транспортного Host, если он указан.
++- Перед проверкой пинга клиент один раз запускает собственный VPN с пригодным сервером, выключает его и затем проверяет серверы.
++- Версии после 0.3.9 продолжаются как 0.4.0, после 0.4.9 — 0.5.0.
++
++APK и AAB подписаны тестовым ключом. Если сервер подписки даже на запрос с `Happ/<версия>` возвращает Base64, автоматический шаблон из XRAY_JSON недоступен; этот ответ отображается в журнале запросов.
+diff --git a/scripts/next_version.py b/scripts/next_version.py
+new file mode 100644
+index 0000000..c0b2bbb
+--- /dev/null
++++ b/scripts/next_version.py
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++"""Advance BMray versions with a single digit patch (0.3.9 -> 0.4.0)."""
++
++from pathlib import Path
++import re
++
++
++def next_version(current: str) -> str:
++    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\+(\d+)", current)
++    if not match:
++        raise ValueError(f"Invalid pubspec version: {current}")
++    major, minor, patch, build = map(int, match.groups())
++    if patch >= 9:
++        minor += 1
++        patch = 0
++    else:
++        patch += 1
++    return f"{major}.{minor}.{patch}+{build + 1}"
++
++
++if __name__ == "__main__":
++    pubspec = Path(__file__).resolve().parent.parent / "pubspec.yaml"
++    source = pubspec.read_text()
++    match = re.search(r"^version: (\S+)$", source, flags=re.MULTILINE)
++    if not match:
++        raise SystemExit("version missing from pubspec.yaml")
++    updated = next_version(match.group(1))
++    pubspec.write_text(source[: match.start(1)] + updated + source[match.end(1) :])
++    print(updated)
+diff --git a/test/subscription_identity_test.dart b/test/subscription_identity_test.dart
+index 8b549bb..4a9453b 100644
+--- a/test/subscription_identity_test.dart
++++ b/test/subscription_identity_test.dart
+@@ -15,7 +15,7 @@ void main() {
+     expect(headers['x-hwid'], identity.hwid);
+     expect(headers['user-agent'], 'BMray/android/0.2.4');
+     expect(headers['cookie'], 'BMray=BMray-0123456789');
+-    expect(identity.xrayJsonUserAgent, 'Happ BMray/android/0.2.4');
++    expect(identity.xrayJsonUserAgent, 'Happ/0.2.4 BMray/android/0.2.4');
+     expect(RegExp(r'^happ', caseSensitive: false)
+         .hasMatch(identity.xrayJsonUserAgent), true);
+     expect(headers['user-agent'], 'BMray/android/0.2.4');
+@@ -28,4 +28,11 @@ void main() {
+     expect(SubscriptionIdentity.defaultUserAgentFor('ios', '0.2.4'),
+         'BMray/ios/0.2.4');
+   });
++
++  test('a manually set Happ agent is kept exactly as entered', () {
++    const identity = SubscriptionIdentity('BMray-0123456789', 'hApP/android/9.9');
++    expect(identity.isHappUserAgent, true);
++    expect(identity.requestHeaders['user-agent'], 'hApP/android/9.9');
++    expect(identity.xrayJsonUserAgent, 'hApP/android/9.9');
++  });
+ }
+diff --git a/test/xray_template_test.dart b/test/xray_template_test.dart
+index 4ec686e..9163214 100644
+--- a/test/xray_template_test.dart
++++ b/test/xray_template_test.dart
+@@ -129,6 +129,41 @@ void main() {
+     expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
+   });
+ 
++  test('raw XHTTP TLS outbound restores absent SNI from its Host', () {
++    final node = parseShareLink(
++      'vless://00000000-0000-4000-8000-000000000001@192.0.2.1:443'
++      '?type=xhttp&security=tls&host=cdn.example.com&path=%2Ffile#Test',
++      includeUnsupported: true,
++    )!;
++    final raw = xrayOutboundFromNode(node);
++    (raw['streamSettings']['tlsSettings'] as Map)['serverName'] = '';
++    node['_xray_outbound'] = raw;
++    final stream = buildXrayBridge(node).xray['outbounds'][0]['streamSettings'];
++    expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
++    expect(raw['streamSettings']['tlsSettings']['serverName'], '');
++  });
++
++  test('VLESS TCP TLS can use Xray on Android without losing SNI', () {
++    final node = parseShareLink(
++      'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
++      '?type=tcp&security=tls&sni=cdn.example.com&fp=firefox#TLS',
++    )!;
++    expect(prefersXrayTls(node), true);
++    final stream = buildXrayBridge(node).xray['outbounds'][0]['streamSettings'];
++    expect(stream['network'], 'tcp');
++    expect(stream['security'], 'tls');
++    expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
++    expect(stream['tlsSettings']['fingerprint'], 'firefox');
++  });
++
++  test('DNS outbound is an Xray internal route, not a broken server', () {
++    final config = jsonDecode(xrayFixture) as Map<String, dynamic>;
++    (config['outbounds'] as List).add({'tag': 'dns', 'protocol': 'dns'});
++    final parsed = parseXrayTemplate(jsonEncode(config))!;
++    expect(parsed.notice ?? '', isNot(contains('dns')));
++    expect(parsed.nodes.first['type'], 'auto');
++  });
++
+   test('Xray Hysteria2 JSON is preserved for the Android core', () {
+     final template = parseXrayTemplate(hysteriaXrayFixture)!;
+     expect(template.nodes, hasLength(1));
+@@ -234,6 +269,13 @@ void main() {
+     expect(parseXrayTemplate(xrayFixture)!.nodes.first['type'], 'auto');
+   });
+ 
++  test('loopback discovery uses endpoints rather than AutoBS names', () {
++    const nameAgnostic = 'vless://00000000-0000-4000-8000-000000000001@'
++        '[::1]:237?type=xhttp&security=tls#Unexpected%20name';
++    final encoded = base64Encode(utf8.encode(nameAgnostic));
++    expect(needsXrayJsonRetry(encoded), true);
++  });
++
+   test('server subtitles use imported transport and security', () {
+     final tcp = parseShareLink(realityLink)!;
+     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');
+diff --git a/tool/config_fixtures.dart b/tool/config_fixtures.dart
+index 97b8d2b..4295e10 100644
+--- a/tool/config_fixtures.dart
++++ b/tool/config_fixtures.dart
+@@ -40,4 +40,15 @@ void main() {
+       options: const SingboxConfigOptions(usePlatformDns: true));
+   File('build/config-check/hysteria-xray.json')
+       .writeAsStringSync(jsonEncode(hysteriaBridge.xray));
++  for (final transport in ['tcp', 'xhttp']) {
++    final tlsNode = parseShareLink(
++      'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
++      '?type=$transport&security=tls&sni=cdn.example.com&fp=chrome'
++      '&host=cdn.example.com&path=%2Fvideo#TLS',
++    )!;
++    final tlsBridge = buildXrayBridge(tlsNode,
++        options: const SingboxConfigOptions(usePlatformDns: true));
++    File('build/config-check/$transport-tls-xray.json')
++        .writeAsStringSync(jsonEncode(tlsBridge.xray));
++  }
+ }
