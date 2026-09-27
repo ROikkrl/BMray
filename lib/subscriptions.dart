@@ -9,6 +9,7 @@ import 'subscription_title.dart';
 import 'subscription_metadata.dart';
 import 'subscription_identity.dart';
 import 'xray_subscription.dart';
+import 'remnawave_template.dart';
 
 class Subscription {
   Subscription({
@@ -25,6 +26,7 @@ class Subscription {
     this.lastUpdatedAt,
     this.pinned = false,
     this.rawResponse,
+    this.autoTemplates = const {},
   });
 
   final String id;
@@ -40,6 +42,7 @@ class Subscription {
   DateTime? lastUpdatedAt;
   bool pinned;
   String? rawResponse;
+  Map<String, String> autoTemplates;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
@@ -66,6 +69,8 @@ class Subscription {
     lastUpdatedAt: DateTime.tryParse(value['lastUpdatedAt'] as String? ?? ''),
     pinned: value['pinned'] as bool? ?? false,
     rawResponse: value['rawResponse'] as String? ?? value['rawJson'] as String?,
+    autoTemplates: (value['autoTemplates'] as Map? ?? {}).map(
+        (key, value) => MapEntry(key.toString(), value.toString())),
     );
   }
 
@@ -83,6 +88,7 @@ class Subscription {
     'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
     'pinned': pinned,
     'rawResponse': rawResponse,
+    'autoTemplates': autoTemplates,
   };
 }
 
@@ -203,6 +209,18 @@ class SubscriptionStore {
         'В обновлённой подписке нет распознанных серверов.',
       );
     item.nodes = parsed.nodes;
+    for (final template in item.autoTemplates.entries) {
+      final index = item.nodes.indexWhere((node) =>
+          node['tag'] == template.key && isLocalTemplateHost(node));
+      if (index >= 0) {
+        try {
+          item.nodes[index] = injectRemnawaveTemplate(
+              template.value, item.nodes, template.key);
+        } on FormatException {
+          // Preserve the new subscription and let the user reattach its template.
+        }
+      }
+    }
     item.notice = parsed.notice;
     item.directRules = parsed.directRules;
     item.announcement = subscriptionAnnouncement(downloaded.announce);
@@ -213,6 +231,14 @@ class SubscriptionStore {
     if (!item.customName) {
       item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
     }
+  }
+
+  void attachAutoTemplate(Subscription item, int index, String raw) {
+    final node = item.nodes[index];
+    final tag = node['tag']?.toString() ?? '';
+    final assembled = injectRemnawaveTemplate(raw, item.nodes, tag);
+    item.nodes[index] = assembled;
+    item.autoTemplates = {...item.autoTemplates, tag: raw};
   }
 
   ({List<Map<String, dynamic>> nodes, String? name, String? notice,

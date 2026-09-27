@@ -14,6 +14,7 @@ import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
 import 'json_config_page.dart';
+import 'remnawave_template.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -328,6 +329,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _toggle() async {
+    if (_pingBusy) return;
     final item = _selected;
     if (_status.state == VpnState.connected) {
       setState(() => _setStatus(const VpnStatus(VpnState.disconnecting)));
@@ -341,8 +343,13 @@ class _HomePageState extends State<HomePage> {
       });
       return;
     }
-    if (item == null || item.nodes.isEmpty || _status.state.isBusy) return;
-    await _perform(() async {
+    if (item == null || item.nodes.isEmpty || _status.state.isBusy || _pingBusy) return;
+    await _perform(_startSelected);
+  }
+
+  Future<void> _startSelected() async {
+      final item = _selected;
+      if (item == null || item.nodes.isEmpty) return;
       final node = item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
       if (node['_unsupported_reason'] != null) {
         throw FormatException(node['_unsupported_reason'].toString());
@@ -364,6 +371,68 @@ class _HomePageState extends State<HomePage> {
       if (validationError != null) throw FormatException(validationError);
       await _vpn.start(configJson, name: 'BMray',
           xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
+  }
+
+  Future<void> _waitForDisconnect() async {
+    for (var attempt = 0; attempt < 60; attempt++) {
+      if ((await _vpn.currentStatus()).state == VpnState.disconnected) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    throw const FormatException('VPN не успел отключиться. Повторите попытку.');
+  }
+
+  Future<void> _selectServer(Subscription item, int index) async {
+    if (_busy || _pingBusy || _status.state.isBusy ||
+        (_selected?.id == item.id && _nodeIndex == index)) return;
+    if (_status.state == VpnState.connected) {
+      await _perform(() async {
+        await _vpn.stop();
+        await _waitForDisconnect();
+        if (!mounted) return;
+        setState(() {
+          _subscriptionId = item.id;
+          _nodeIndex = index;
+        });
+        _rememberSelection();
+        await _startSelected();
+      });
+    } else {
+      setState(() {
+        _subscriptionId = item.id;
+        _nodeIndex = index;
+      });
+      _rememberSelection();
+    }
+  }
+
+  Future<void> _attachAutoTemplate(Subscription item, int index) async {
+    final input = TextEditingController(text: item.autoTemplates[
+        item.nodes[index]['tag']?.toString() ?? ''] ?? '');
+    final apply = await showDialog<bool>(context: context, builder: (ctx) =>
+      AlertDialog(
+        title: const Text('Шаблон АвтоБС'),
+        content: SizedBox(width: 560, child: SingleChildScrollView(child: Column(
+          mainAxisSize: MainAxisSize.min, children: [
+            const Text('Вставьте Xray JSON шаблон этого хоста из Remnawave. '
+                'В ответе подписки injectHosts отсутствует.'),
+            TextField(controller: input, maxLines: 12, minLines: 5,
+                decoration: const InputDecoration(hintText: '{ "remnawave": ... }')),
+          ],
+        ))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Привязать')),
+        ],
+      ));
+    final raw = input.text;
+    input.dispose();
+    if (apply != true) return;
+    await _perform(() async {
+      _store.attachAutoTemplate(item, index, raw);
+      await _store.save(_subscriptions);
+      if (mounted) setState(() {});
     });
   }
 
@@ -503,6 +572,8 @@ class _HomePageState extends State<HomePage> {
           : node['_xray_outbound'] is Map
               ? 'Individual Xray outbound'
               : 'Individual server',
+      if (node['_template_warning'] != null)
+        'templateWarning': node['_template_warning'],
     };
     final server = node['server']?.toString();
     if (node['type'] != 'auto' && server != null &&
@@ -713,11 +784,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _ping(Subscription item, List<int> indices) async {
-    if (_pingBusy) return;
-    if (_pingMethod == PingMethod.icmp && _status.state.isActive) {
-      setState(() => _error = 'Для ICMP отключите VPN: ICMP не проходит через прокси.');
-      return;
-    }
+    if (_pingBusy || _busy || _status.state.isBusy) return;
     setState(() {
       _pingBusy = true;
       _error = null;
@@ -728,6 +795,14 @@ class _HomePageState extends State<HomePage> {
     });
     final method = _pingMethod;
     try {
+      if (_status.state == VpnState.connected) {
+        await _vpn.stop();
+        await _waitForDisconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      if (await _vpn.otherVpnActive()) {
+        throw const FormatException('Выключите VPN другого приложения в настройках Android перед проверкой.');
+      }
       for (var start = 0; start < indices.length; start += 3) {
         final batch = indices.skip(start).take(3).toList();
         final values = await Future.wait(batch.map((i) => _probe(item.nodes[i])));
@@ -741,6 +816,9 @@ class _HomePageState extends State<HomePage> {
           }
         });
       }
+    } catch (error) {
+      if (mounted) setState(() => _error = error is FormatException
+          ? error.message : 'Проверка серверов не удалась.');
     } finally {
       if (mounted) setState(() => _pingBusy = false);
     }
@@ -799,7 +877,7 @@ class _HomePageState extends State<HomePage> {
     final isActive = _status.state == VpnState.connected;
     final isConnecting = _status.state == VpnState.connecting;
     final canChange =
-        !_busy && !_autoRefreshing && !_status.state.isActive && !_status.state.isBusy;
+        !_busy && !_pingBusy && !_autoRefreshing && !_status.state.isBusy;
     final label = switch (_status.state) {
       VpnState.connected => 'Подключено',
       VpnState.connecting => 'Подключение…',
@@ -889,7 +967,7 @@ class _HomePageState extends State<HomePage> {
       bool isActive, bool isConnecting) {
     final node = item == null || item.nodes.isEmpty ? null
         : item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
-    final canToggle = !_busy && (!_pingBusy || isActive) &&
+    final canToggle = !_busy && !_pingBusy &&
         _status.state != VpnState.disconnecting &&
         _status.state != VpnState.reasserting && !isConnecting &&
         (isActive || (node != null && node['_unsupported_reason'] == null));
@@ -1200,7 +1278,7 @@ class _HomePageState extends State<HomePage> {
                   index < _subscriptions.length - 1 &&
                   _subscriptions[index + 1].pinned == item.pinned,
                 child: const Text('Переместить вниз')),
-              PopupMenuItem(value: 'remove', enabled: canChange,
+              PopupMenuItem(value: 'remove', enabled: canChange && !_status.state.isActive,
                 child: const Text('Удалить')),
             ]),
         ])),
@@ -1227,7 +1305,8 @@ class _HomePageState extends State<HomePage> {
                 () => _ping(item, List.generate(item.nodes.length, (i) => i)),
               icon: const Icon(Icons.speed_rounded, size: 20)),
             IconButton(tooltip: 'Обновить подписку',
-              onPressed: canChange && item.isRemote ? () => _refresh(item) : null,
+              onPressed: canChange && !_status.state.isActive && item.isRemote
+                  ? () => _refresh(item) : null,
               icon: const Icon(Icons.refresh_rounded, size: 20)),
             Text('${item.nodes.length}', style: const TextStyle(
               color: Color(0xFF9DAEC7))),
@@ -1275,13 +1354,8 @@ class _HomePageState extends State<HomePage> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: canChange && unsupported == null ? () {
-          setState(() {
-            _subscriptionId = item.id;
-            _nodeIndex = index;
-          });
-          _rememberSelection();
-        } : null,
+        onTap: canChange && unsupported == null
+            ? () => _selectServer(item, index) : null,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
           child: Row(children: [
@@ -1295,6 +1369,10 @@ class _HomePageState extends State<HomePage> {
               if (unsupported != null) Text(unsupported,
                 maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
+              if (node['_template_warning'] != null) Text(
+                node['_template_warning'].toString(), maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: Color(0xFFFFC58F))),
               if (_pingErrors[key] != null) Text(_pingErrors[key]!,
                 maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
@@ -1304,6 +1382,13 @@ class _HomePageState extends State<HomePage> {
               maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
+            if (isLocalTemplateHost(node)) IconButton(
+              tooltip: 'Привязать Xray JSON шаблон АвтоБС',
+              onPressed: _busy || _status.state.isActive ? null
+                  : () => _attachAutoTemplate(item, index),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.account_tree_outlined, size: 19),
+            ),
             IconButton(
               tooltip: 'Просмотр JSON конфигурации',
               onPressed: () => _showNodeJson(item, index),

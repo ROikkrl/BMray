@@ -112,6 +112,14 @@ class FlutterSingboxVpnPlugin :
                 result.success(null)
             }
             "stop" -> { stopVpn(); result.success(null) }
+            "otherVpnActive" -> {
+                val cm = context.getSystemService(ConnectivityManager::class.java)
+                val activeVpn = cm.activeNetwork?.let { network ->
+                    cm.getNetworkCapabilities(network)?.hasTransport(
+                        NetworkCapabilities.TRANSPORT_VPN)
+                } == true
+                result.success(activeVpn && SingBoxVpnService.state != "connected")
+            }
             "status" -> result.success(mapOf(
                 "state" to SingBoxVpnService.state,
                 "connectedAtMillis" to SingBoxVpnService.connectedAtMillis,

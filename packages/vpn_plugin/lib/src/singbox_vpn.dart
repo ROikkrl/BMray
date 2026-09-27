@@ -54,6 +54,15 @@ class SingboxVpn {
   /// Stop the tunnel.
   Future<void> stop() => _methods.invokeMethod<void>('stop');
 
+  /// Reports an Android VPN transport after this application's tunnel stops.
+  Future<bool> otherVpnActive() async {
+    try {
+      return await _methods.invokeMethod<bool>('otherVpnActive') ?? false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   /// One-shot current status.
   Future<VpnStatus> currentStatus() async {
     final res = await _methods.invokeMethod<dynamic>('status');

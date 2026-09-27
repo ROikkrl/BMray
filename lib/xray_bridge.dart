@@ -30,7 +30,7 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
   final raw = node['_xray_outbound'];
   final outbound = template is Map ? <String, dynamic>{} : raw is Map
       ? jsonDecode(jsonEncode(raw)) as Map<String, dynamic>
-      : _toXrayOutbound(node);
+      : xrayOutboundFromNode(node);
   if (template is! Map) outbound['tag'] = 'proxy';
   final templateOutbounds = template is Map
       ? jsonDecode(jsonEncode(template['outbounds'])) as List
@@ -145,8 +145,13 @@ Map<String, dynamic> _autoRouting(Map template) {
   };
 }
 
-Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {
-  final transport = node['transport'] as Map;
+/// Converts an imported VLESS link into an Xray outbound for injected hosts.
+Map<String, dynamic> xrayOutboundFromNode(Map<String, dynamic> node) {
+  if (node['type'] != 'vless') {
+    throw const FormatException('Шаблон АвтоБС поддерживает VLESS узлы');
+  }
+  final transport = node['transport'] is Map ? node['transport'] as Map : <String, dynamic>{};
+  final network = transport['type']?.toString() ?? 'tcp';
   final tls = node['tls'] as Map?;
   final sni = tls?['server_name']?.toString();
   final transportHost = transport['host']?.toString();
@@ -163,8 +168,12 @@ Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {
   final security = reality != null ? 'reality' : tls == null ? 'none' : 'tls';
   final fp = (tls?['utls'] as Map?)?['fingerprint'];
   final stream = <String, dynamic>{
-    'network': 'xhttp', 'security': security,
-    'xhttpSettings': xhttp,
+    'network': network, 'security': security,
+    if (network == 'xhttp') 'xhttpSettings': xhttp,
+    if (network == 'grpc') 'grpcSettings': {
+      'serviceName': transport['service_name'] ?? '',
+      if (transport['multi_mode'] == true) 'multiMode': true,
+    },
     if (security == 'reality') 'realitySettings': {
       'serverName': serverName,
       'publicKey': reality?['public_key'],

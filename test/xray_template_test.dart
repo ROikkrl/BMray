@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:bmray/xray_subscription.dart';
 import 'package:bmray/xray_bridge.dart';
+import 'package:bmray/remnawave_template.dart';
 import 'package:bmray/node_label.dart';
 import 'package:bmray/subscriptions.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +13,50 @@ import 'fixtures.dart';
 
 
 void main() {
+  test('Remnawave selector injects real endpoints and drops absent fallback', () {
+    const uuid = '00000000-0000-4000-8000-000000000001';
+    final links = [
+      'vless://$uuid@one.example.com:443?type=xhttp&security=reality&'
+          'sni=www.example.org&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          '&sid=0123456789abcdef&path=%2Ftest#Estonia%20%232',
+      'vless://$uuid@two.example.com:4444?type=tcp&flow=xtls-rprx-vision&'
+          'security=reality&sni=www.example.org&'
+          'pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          '&sid=0123456789abcdef#Estonia%20%232%20(backup)',
+      'vless://$uuid@127.0.0.1:237?type=xhttp&security=tls#Estonia%20Auto',
+    ];
+    final nodes = links.map((link) =>
+        parseShareLink(link, includeUnsupported: true)!).toList();
+    final json = jsonEncode({
+      'routing': {'rules': [
+        {'type': 'field', 'network': 'tcp,udp', 'balancerTag': 'auto_wifi'}
+      ], 'balancers': [{
+        'tag': 'auto_wifi', 'selector': ['WIFI_'],
+        'strategy': {'type': 'leastPing'}, 'fallbackTag': 'FALLBACK_'
+      }]},
+      'outbounds': [{'tag': 'direct', 'protocol': 'freedom'}],
+      'remnawave': {'injectHosts': [
+        {'selector': {'type': 'remarkRegex', 'pattern': 'Estonia #2'},
+          'tagPrefix': 'WIFI_', 'selectFrom': 'NOT_HIDDEN'},
+        {'selector': {'type': 'remarkRegex', 'pattern': r'Estonia \(BS\)'},
+          'tagPrefix': 'FALLBACK_', 'selectFrom': 'ALL'},
+      ]},
+    });
+    final node = injectRemnawaveTemplate(json, nodes, 'Estonia Auto');
+    expect(node['type'], 'auto');
+    expect(node['_template_warning'], contains('FALLBACK_'));
+    final bridge = buildXrayBridge(node);
+    final outbounds = bridge.xray['outbounds'] as List;
+    expect(outbounds.map((o) => o['tag']), ['WIFI_', 'WIFI_-2', 'direct']);
+    expect(outbounds[0]['settings']['vnext'][0]['address'], 'one.example.com');
+    expect(outbounds[1]['settings']['vnext'][0]['address'], 'two.example.com');
+    expect(outbounds[1]['settings']['vnext'][0]['users'][0]['flow'],
+        'xtls-rprx-vision');
+    expect(bridge.xray['routing']['balancers'][0].containsKey('fallbackTag'), false);
+    final item = Subscription(id: '1', name: 'test', url: 'https://example.com/sub',
+        nodes: nodes, autoTemplates: {'Estonia Auto': json});
+    expect(Subscription.fromJson(item.toJson()).autoTemplates['Estonia Auto'], json);
+  });
   test('Xray template preserves XHTTP outbound without turning it into TCP', () {
     final profile = parseXrayTemplate(xrayFixture)!;
     expect(profile.name, 'Польша - АвтоБС');
