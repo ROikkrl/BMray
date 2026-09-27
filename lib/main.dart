@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
@@ -81,6 +82,8 @@ class _HomePageState extends State<HomePage> {
   // 0: servers, 1: settings, 2: ping, 3: information, 4: logs, 5: user agent.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
+  late final Future<String> _appVersion = PackageInfo.fromPlatform().then(
+      (info) => 'BMray ${info.version} (сборка ${info.buildNumber})');
   late Future<String> _logs = _vpn.readLogs();
   final Map<String, int?> _latencies = {};
   final Map<String, String> _pingErrors = {};
@@ -954,7 +957,9 @@ class _HomePageState extends State<HomePage> {
         const Text('Информация', style: TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
-        _infoTile('Приложение', 'BMray 0.2.2 (сборка 13)'),
+        FutureBuilder<String>(future: _appVersion,
+          builder: (context, app) => _infoTile('Приложение',
+              app.data ?? (app.hasError ? 'Недоступно' : 'Загрузка…'))),
         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
             snapshot.data ?? 'Загрузка…'),

@@ -474,6 +474,12 @@ _UriParts? _parseUriStyle(String link, String scheme) {
     hostPort = rest.substring(atIdx + 1);
   }
 
+  // Standard URI serializers include a root path after the authority, e.g.
+  // hysteria2://password@vpn.example.com:443/?sni=vpn.example.com.
+  // It is not part of the port (and proxy paths live in query parameters).
+  final pathStart = hostPort.indexOf('/');
+  if (pathStart >= 0) hostPort = hostPort.substring(0, pathStart);
+
   // Split host:port, accounting for IPv6 [..]:port.
   String host;
   int? port;

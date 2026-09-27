@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:io';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class SubscriptionIdentity {
   const SubscriptionIdentity(this.hwid, this.userAgent);
@@ -10,9 +11,11 @@ class SubscriptionIdentity {
   static const _storage = FlutterSecureStorage();
   static const hwidKey = 'bmray.subscriptionHwid';
   static const userAgentKey = 'bmray.subscriptionUserAgent';
-  static const defaultUserAgent = 'BMray/0.2.2';
   final String hwid;
   final String userAgent;
+
+  static String defaultUserAgentFor(String platform, String version) =>
+      'BMray/$platform/$version';
 
   static bool validHwid(String value) =>
       RegExp(r'^[A-Za-z0-9=-]{10,64}$').hasMatch(value);
@@ -29,9 +32,16 @@ class SubscriptionIdentity {
       await _storage.write(key: hwidKey, value: hwid);
     }
     final savedAgent = await _storage.read(key: userAgentKey);
-    return SubscriptionIdentity(hwid,
-        savedAgent != null && validUserAgent(savedAgent)
-            ? savedAgent : defaultUserAgent);
+    // Older versions saved their old default as if it were a custom value.
+    final legacyDefault = savedAgent != null &&
+        RegExp(r'^BMray/[0-9]+(?:\.[0-9]+)+$').hasMatch(savedAgent);
+    if (savedAgent != null && validUserAgent(savedAgent) && !legacyDefault) {
+      return SubscriptionIdentity(hwid, savedAgent);
+    }
+    final platform = Platform.isAndroid ? 'android'
+        : Platform.isIOS ? 'ios' : Platform.operatingSystem;
+    final version = (await PackageInfo.fromPlatform()).version;
+    return SubscriptionIdentity(hwid, defaultUserAgentFor(platform, version));
   }
 
   Future<void> save() async {

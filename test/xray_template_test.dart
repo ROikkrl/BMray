@@ -100,6 +100,23 @@ void main() {
     expect(node?['password'], 'password');
   });
 
+  test('Hysteria2 share link with slash after port imports and builds', () async {
+    const link = 'hysteria2://00000000-0000-4000-8000-000000000001@'
+        'lv.example.com:4443/?sni=lv.example.com#%F0%9F%87%B1%F0%9F%87%BB%20Latvia';
+    final node = parseShareLink(link, includeUnsupported: true)!;
+    expect(node['type'], 'hysteria2');
+    expect(node['server'], 'lv.example.com');
+    expect(node['server_port'], 4443);
+    expect(node['password'], '00000000-0000-4000-8000-000000000001');
+    expect(node['tls']['server_name'], 'lv.example.com');
+    expect(node['tag'], contains('Latvia'));
+    expect(buildSingboxConfig(node)['outbounds'][0]['type'], 'hysteria2');
+    expect(parseSubscription('$link\n$link'), hasLength(2));
+    final imported = await SubscriptionStore().import('', link);
+    expect(imported.nodes, hasLength(1));
+    expect(imported.nodes.single['server_port'], 4443);
+  });
+
   test('Raw Xray outbound array keeps Hysteria in the subscription', () async {
     final raw = jsonDecode(hysteriaXrayFixture) as Map;
     final subscription = await SubscriptionStore()
