@@ -24,6 +24,7 @@ class Subscription {
     this.updateHours,
     this.lastUpdatedAt,
     this.pinned = false,
+    this.rawJson,
   });
 
   final String id;
@@ -38,6 +39,7 @@ class Subscription {
   int? updateHours;
   DateTime? lastUpdatedAt;
   bool pinned;
+  String? rawJson;
 
   bool get isRemote => Uri.tryParse(url)?.scheme == 'https';
 
@@ -63,6 +65,7 @@ class Subscription {
     updateHours: value['updateHours'] as int?,
     lastUpdatedAt: DateTime.tryParse(value['lastUpdatedAt'] as String? ?? ''),
     pinned: value['pinned'] as bool? ?? false,
+    rawJson: value['rawJson'] as String?,
     );
   }
 
@@ -79,6 +82,7 @@ class Subscription {
     'updateHours': updateHours,
     'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
     'pinned': pinned,
+    'rawJson': rawJson,
   };
 }
 
@@ -121,6 +125,7 @@ class SubscriptionStore {
         directRules: template?.directRules ?? parsed!.directRules,
         notice: template?.notice ?? parsed?.notice,
         customName: name.trim().isNotEmpty,
+        rawJson: _jsonPayload(input),
       );
     }
     final normalized = Uri.tryParse(input);
@@ -180,6 +185,7 @@ class SubscriptionStore {
       traffic: SubscriptionTraffic.fromHeader(downloaded.userInfo),
       updateHours: subscriptionUpdateHours(downloaded.updateInterval),
       lastUpdatedAt: DateTime.now(),
+      rawJson: _jsonPayload(downloaded.body),
     );
   }
 
@@ -202,6 +208,7 @@ class SubscriptionStore {
     item.traffic = SubscriptionTraffic.fromHeader(downloaded.userInfo);
     item.updateHours = subscriptionUpdateHours(downloaded.updateInterval);
     item.lastUpdatedAt = DateTime.now();
+    item.rawJson = _jsonPayload(downloaded.body);
     if (!item.customName) {
       item.name = subscriptionTitle(downloaded.title, downloaded.body) ?? parsed.name ?? item.name;
     }
@@ -329,5 +336,25 @@ class SubscriptionStore {
     } finally {
       client.close(force: true);
     }
+  }
+}
+
+/// Preserve JSON responses for local inspection. Decode Base64-wrapped JSON.
+String? _jsonPayload(String body) {
+  var text = body.trim();
+  if (!text.startsWith('{') && !text.startsWith('[') &&
+      !text.contains('://')) {
+    try {
+      text = utf8.decode(base64.decode(base64.normalize(text))).trim();
+    } on FormatException {
+      return null;
+    }
+  }
+  if (!text.startsWith('{') && !text.startsWith('[')) return null;
+  try {
+    final parsed = jsonDecode(text);
+    return parsed is Map || parsed is List ? text : null;
+  } on FormatException {
+    return null;
   }
 }

@@ -126,6 +126,14 @@ void main() {
     expect(usesXray(subscription.nodes.single), true);
   });
 
+  test('Imported template retains the original JSON across storage serialization', () async {
+    final imported = await SubscriptionStore().import('', xrayFixture);
+    expect(jsonDecode(imported.rawJson!), jsonDecode(xrayFixture));
+    final restored = Subscription.fromJson(imported.toJson());
+    expect(restored.rawJson, imported.rawJson);
+    expect(restored.nodes.first['_xray_template'], isNotNull);
+  });
+
   test('server subtitles use imported transport and security', () {
     final tcp = parseShareLink(realityLink)!;
     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');

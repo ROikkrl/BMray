@@ -13,6 +13,7 @@ import 'subscriptions.dart';
 import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
+import 'json_config_page.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -448,6 +449,103 @@ class _HomePageState extends State<HomePage> {
 
   String _delayKey(Subscription item, int index) =>
       '${item.id}:$index:${_pingMethod.name}';
+
+  String _formatJson(Object? value) {
+    try {
+      return const JsonEncoder.withIndent('  ')
+          .convert(value is String ? jsonDecode(value) : value);
+    } catch (error) {
+      return 'Не удалось сформировать JSON: $error';
+    }
+  }
+
+  void _showSubscriptionJson(Subscription item) {
+    final source = item.rawJson;
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
+        JsonConfigPage(title: item.name, tabs: [
+          JsonConfigTab('Ответ подписки', source == null
+              ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+              : _formatJson(source)),
+        ])));
+  }
+
+  void _showNodeJson(Subscription item, int index) {
+    final node = item.nodes[index];
+    final tabs = <JsonConfigTab>[
+      JsonConfigTab('Ответ подписки', item.rawJson == null
+          ? 'Исходный JSON ещё не сохранён. Обновите подписку или импортируйте профиль заново.'
+          : _formatJson(item.rawJson)),
+      JsonConfigTab('Импортированный узел', _formatJson(node)),
+    ];
+    final key = _delayKey(item, index);
+    final diagnostics = <String, dynamic>{
+      'method': _pingMethod.name,
+      'proxyTimeoutSeconds': _proxyTimeoutSeconds,
+      'lastLatencyMs': _latencies[key],
+      'lastError': _pingErrors[key],
+    };
+    try {
+      if (usesXray(node)) {
+        final bridge = buildXrayBridge(node,
+            options: const SingboxConfigOptions(usePlatformDns: true));
+        tabs.add(JsonConfigTab('Xray: подключение', _formatJson(bridge.xray)));
+        tabs.add(JsonConfigTab('sing-box: туннель', _formatJson(bridge.singbox)));
+        diagnostics['note'] = 'Локальный SOCKS порт и пароль генерируются заново при подключении.';
+        final template = node['_xray_template'];
+        if (template is Map && template['routing'] is Map &&
+            template['outbounds'] is List) {
+          final routing = template['routing'] as Map;
+          final balancers = routing['balancers'];
+          if (balancers is List && balancers.isNotEmpty && balancers.first is Map) {
+            final balancer = balancers.first as Map;
+            final selectors = (balancer['selector'] is List)
+                ? (balancer['selector'] as List).map((value) => value.toString()).toList()
+                : <String>[];
+            final outbounds = (template['outbounds'] as List).whereType<Map>().toList();
+            final candidates = outbounds.where((outbound) =>
+                selectors.any((prefix) => (outbound['tag']?.toString() ?? '')
+                    .startsWith(prefix))).toList();
+            final fallback = balancer['fallbackTag']?.toString();
+            diagnostics['selectors'] = selectors;
+            diagnostics['candidates'] = [for (final outbound in candidates)
+              {'tag': outbound['tag'], 'protocol': outbound['protocol'],
+                'vnext': (outbound['settings'] is Map)
+                    ? (outbound['settings'] as Map)['vnext'] : null}];
+            diagnostics['fallbackTag'] = fallback;
+            diagnostics['fallbackExists'] = outbounds.any((entry) => entry['tag'] == fallback);
+            for (final outbound in [
+              if (candidates.isNotEmpty) candidates.first,
+              if (fallback != null) ...outbounds.where((entry) => entry['tag'] == fallback),
+            ]) {
+              final tag = outbound['tag']?.toString();
+              if (tag == null) continue;
+              final probe = buildXrayBridge(node, probe: true,
+                  probeOutboundTag: tag,
+                  options: const SingboxConfigOptions(usePlatformDns: true));
+              tabs.add(JsonConfigTab('Пинг: $tag', _formatJson(probe.xray)));
+            }
+          }
+        } else {
+          final probe = buildXrayBridge(node, probe: true,
+              options: const SingboxConfigOptions(usePlatformDns: true));
+          tabs.add(JsonConfigTab('Xray: пинг', _formatJson(probe.xray)));
+        }
+      } else {
+        final config = buildSingboxConfig(node,
+            options: SingboxConfigOptions(usePlatformDns: Platform.isAndroid));
+        if (item.directRules.isNotEmpty && node['type'] != 'auto') {
+          (config['route']['rules'] as List).addAll(item.directRules);
+        }
+        tabs.add(JsonConfigTab('sing-box: подключение', _formatJson(config)));
+      }
+    } catch (error) {
+      diagnostics['configError'] = error.toString();
+    }
+    tabs.add(JsonConfigTab('Диагностика', _formatJson(diagnostics)));
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
+        JsonConfigPage(title: node['tag']?.toString() ?? 'Сервер ${index + 1}',
+            tabs: tabs)));
+  }
 
   Future<({int? delay, String? reason})> _probeAutoProxy(
       Map<String, dynamic> node) async {
@@ -1061,9 +1159,12 @@ class _HomePageState extends State<HomePage> {
               switch (action) {
                 case 'up': _moveSubscription(item, -1); break;
                 case 'down': _moveSubscription(item, 1); break;
+                case 'json': _showSubscriptionJson(item); break;
                 case 'remove': _remove(item); break;
               }
             }, itemBuilder: (_) => [
+              const PopupMenuItem(value: 'json',
+                child: Text('Исходный JSON подписки')),
               PopupMenuItem(value: 'up', enabled: !_busy && !_autoRefreshing && index > 0 &&
                   _subscriptions[index - 1].pinned == item.pinned,
                 child: const Text('Переместить вверх')),
@@ -1175,6 +1276,12 @@ class _HomePageState extends State<HomePage> {
               maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
+            IconButton(
+              tooltip: 'Просмотр JSON конфигурации',
+              onPressed: () => _showNodeJson(item, index),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.data_object_rounded, size: 19),
+            ),
             IconButton(
               tooltip: 'Проверить сервер',
               onPressed: _pingBusy ? null : () => _ping(item, [index]),
