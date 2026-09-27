@@ -72,6 +72,18 @@ void main() {
     expect(stream['realitySettings']['shortId'], '0123456789abcdef');
   });
 
+  test('XHTTP TLS uses transport host when an explicit SNI is empty', () {
+    final node = parseShareLink(
+      'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
+      '?type=xhttp&security=tls&sni=&host=cdn.example.com&path=%2Ffile#Test',
+      includeUnsupported: true,
+    )!;
+    expect(node['tls']['server_name'], 'cdn.example.com');
+    node['tls']['server_name'] = '';
+    final stream = buildXrayBridge(node).xray['outbounds'][0]['streamSettings'];
+    expect(stream['tlsSettings']['serverName'], 'cdn.example.com');
+  });
+
   test('Xray Hysteria2 JSON is preserved for the Android core', () {
     final template = parseXrayTemplate(hysteriaXrayFixture)!;
     expect(template.nodes, hasLength(1));

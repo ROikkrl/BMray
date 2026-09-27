@@ -483,7 +483,20 @@ class _HomePageState extends State<HomePage> {
       'proxyTimeoutSeconds': _proxyTimeoutSeconds,
       'lastLatencyMs': _latencies[key],
       'lastError': _pingErrors[key],
+      'profileKind': node['_xray_template'] is Map
+          ? 'Xray template with balancer'
+          : node['_xray_outbound'] is Map
+              ? 'Individual Xray outbound'
+              : 'Individual server',
     };
+    final server = node['server']?.toString();
+    if (node['type'] != 'auto' && server != null &&
+        (server == 'localhost' ||
+            InternetAddress.tryParse(server)?.isLoopback == true)) {
+      diagnostics['warning'] = 'Этот выход направлен на $server:${node['server_port']} '
+          'на самом телефоне. Он не может достичь удалённого VPN-сервера '
+          'без отдельного локального прокси. Сравните ответ подписки с конфигом HAPP.';
+    }
     try {
       if (usesXray(node)) {
         final bridge = buildXrayBridge(node,

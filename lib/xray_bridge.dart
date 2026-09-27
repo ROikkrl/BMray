@@ -148,6 +148,11 @@ Map<String, dynamic> _autoRouting(Map template) {
 Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {
   final transport = node['transport'] as Map;
   final tls = node['tls'] as Map?;
+  final sni = tls?['server_name']?.toString();
+  final transportHost = transport['host']?.toString();
+  final serverName = sni != null && sni.isNotEmpty ? sni
+      : transportHost != null && transportHost.isNotEmpty ? transportHost
+      : node['server'];
   final reality = tls?['reality'] as Map?;
   final xhttp = <String, dynamic>{
     if (transport['path'] != null) 'path': transport['path'],
@@ -161,14 +166,14 @@ Map<String, dynamic> _toXrayOutbound(Map<String, dynamic> node) {
     'network': 'xhttp', 'security': security,
     'xhttpSettings': xhttp,
     if (security == 'reality') 'realitySettings': {
-      'serverName': tls?['server_name'] ?? node['server'],
+      'serverName': serverName,
       'publicKey': reality?['public_key'],
       'shortId': reality?['short_id'] ?? '',
       if (reality?['spider_x'] != null) 'spiderX': reality?['spider_x'],
       'fingerprint': fp ?? 'chrome',
     },
     if (security == 'tls') 'tlsSettings': {
-      'serverName': tls?['server_name'] ?? node['server'],
+      'serverName': serverName,
       if (fp != null) 'fingerprint': fp,
       if (tls?['alpn'] is List) 'alpn': tls?['alpn'],
       if (tls?['insecure'] == true) 'allowInsecure': true,

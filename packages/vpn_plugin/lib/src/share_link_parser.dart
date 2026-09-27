@@ -311,9 +311,13 @@ Map<String, dynamic>? _unsupportedXhttpLink(String link) {
   if (parts.params['flow']?.isNotEmpty == true) node['flow'] = parts.params['flow'];
   final security = (parts.params['security'] ?? 'none').toLowerCase();
   if (security == 'tls' || security == 'reality') {
+    final sni = parts.params['sni'];
+    final transportHost = parts.params['host'];
     node['tls'] = {
       'enabled': true,
-      'server_name': parts.params['sni'] ?? parts.host,
+      'server_name': sni != null && sni.isNotEmpty ? sni
+          : transportHost != null && transportHost.isNotEmpty
+              ? transportHost : parts.host,
       if (parts.params['fp']?.isNotEmpty == true)
         'utls': {'enabled': true, 'fingerprint': parts.params['fp']},
       if (parts.params['alpn']?.isNotEmpty == true)
