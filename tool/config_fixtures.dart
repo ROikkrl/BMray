@@ -45,6 +45,7 @@ void main() {
       'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
       '?type=$transport&security=tls&sni=cdn.example.com&fp=chrome'
       '&host=cdn.example.com&path=%2Fvideo#TLS',
+      includeUnsupported: true,
     )!;
     final tlsBridge = buildXrayBridge(tlsNode,
         options: const SingboxConfigOptions(usePlatformDns: true));
