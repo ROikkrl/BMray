@@ -1,0 +1,173 @@
+diff --git a/lib/main.dart b/lib/main.dart
+index a088da8..98f28ef 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1177,6 +1177,11 @@ class _HomePageState extends State<HomePage> {
+     const SizedBox(height: 12),
+     const Text('BMray отправляет постоянный HWID в x-hwid и Cookie BMray. '
+       'Изменение HWID может занять новое место в лимите устройств панели.'),
++    const SizedBox(height: 8),
++    const Text('Для подписки Base64 с локальным адресом АвтоБС BMray '
++      'повторяет запрос с User-Agent «Happ BMray/…»: правило Remnawave '
++      'выдаёт готовый XRAY_JSON. В остальных запросах действует '
++      'указанный ниже User-Agent.'),
+     const SizedBox(height: 18),
+     TextField(controller: _hwidInput, autocorrect: false,
+       decoration: const InputDecoration(labelText: 'HWID',
+diff --git a/lib/subscription_identity.dart b/lib/subscription_identity.dart
+index 1031dff..176ec38 100644
+--- a/lib/subscription_identity.dart
++++ b/lib/subscription_identity.dart
+@@ -60,4 +60,9 @@ class SubscriptionIdentity {
+     'x-device-model': 'BMray',
+     HttpHeaders.cookieHeader: 'BMray=$hwid',
+   };
++
++  /// The Remnawave XRAY_JSON rule requires the User-Agent to *start* with Happ.
++  /// Only the retry for a Base64 subscription with local template hosts uses it.
++  String get xrayJsonUserAgent =>
++      userAgent.toLowerCase().startsWith('happ') ? userAgent : 'Happ $userAgent';
+ }
+diff --git a/lib/subscriptions.dart b/lib/subscriptions.dart
+index 4e445de..b60449d 100644
+--- a/lib/subscriptions.dart
++++ b/lib/subscriptions.dart
+@@ -173,7 +173,7 @@ class SubscriptionStore {
+         'Вставьте HTTPS-подписку или ссылку сервера vless://, vmess://, trojan://, ss://, hy2://, tuic://',
+       );
+     }
+-    final downloaded = await _download(normalized);
++    final downloaded = await _downloadPreferXrayJson(normalized);
+     final parsed = _parse(downloaded.body);
+     await requestLog.append({'event': 'parse', 'id': downloaded.id,
+       'format': subscriptionBodySummary(downloaded.body)['format'],
+@@ -209,7 +209,7 @@ class SubscriptionStore {
+         'Это отдельный сервер. Для изменения импортируйте новую ссылку.',
+       );
+     }
+-    final downloaded = await _download(Uri.parse(item.url));
++    final downloaded = await _downloadPreferXrayJson(Uri.parse(item.url));
+     final parsed = _parse(downloaded.body);
+     await requestLog.append({'event': 'parse', 'id': downloaded.id,
+       'format': subscriptionBodySummary(downloaded.body)['format'],
+@@ -319,7 +319,31 @@ class SubscriptionStore {
+   }
+ 
+   Future<({String id, String body, String? title, String? announce,
+-      String? userInfo, String? updateInterval})> _download(Uri initial) async {
++      String? userInfo, String? updateInterval})> _downloadPreferXrayJson(
++          Uri initial) async {
++    final original = await _download(initial);
++    if (!needsXrayJsonRetry(original.body)) return original;
++    await requestLog.append({'event': 'compatibility', 'id': original.id,
++      'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
++    try {
++      final retried = await _download(initial, requestXrayJson: true);
++      final json = retried.body.trimLeft();
++      final usable = (json.startsWith('{') || json.startsWith('[')) &&
++          _parse(retried.body).nodes.isNotEmpty;
++      await requestLog.append({'event': 'compatibility', 'id': original.id,
++        'retryId': retried.id, 'result': usable ? 'xray-json' : 'original-kept',
++        'format': subscriptionBodySummary(retried.body)['format']});
++      return usable ? retried : original;
++    } catch (error) {
++      await requestLog.append({'event': 'compatibility', 'id': original.id,
++        'result': 'original-kept', 'retryError': error.runtimeType.toString()});
++      return original;
++    }
++  }
++
++  Future<({String id, String body, String? title, String? announce,
++      String? userInfo, String? updateInterval})> _download(Uri initial,
++          {bool requestXrayJson = false}) async {
+     final client = HttpClient()
+       ..connectionTimeout = const Duration(seconds: 12);
+     final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+@@ -336,7 +360,12 @@ class SubscriptionStore {
+             .timeout(const Duration(seconds: 15));
+         final stopwatch = Stopwatch()..start();
+         request.followRedirects = false;
+-        final headers = (identity ??= await SubscriptionIdentity.load()).requestHeaders;
++        final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
++        final headers = subscriptionIdentity.requestHeaders;
++        if (requestXrayJson) {
++          headers[HttpHeaders.userAgentHeader] =
++              subscriptionIdentity.xrayJsonUserAgent;
++        }
+         for (final entry in headers.entries) {
+           request.headers.set(entry.key, entry.value);
+         }
+@@ -346,6 +375,7 @@ class SubscriptionStore {
+         requestHeaderNames.sort();
+         await requestLog.append({
+           'event': 'request', 'id': requestId, 'hop': redirect,
++          'xrayJsonRetry': requestXrayJson,
+           'method': 'GET', 'target': subscriptionRequestTarget(uri),
+           'requestHeaderNames': requestHeaderNames,
+           'userAgent': headers[HttpHeaders.userAgentHeader],
+@@ -426,6 +456,14 @@ class SubscriptionStore {
+   }
+ }
+ 
++/// Base64 links pointing to the phone itself need the server-generated
++/// Remnawave template, which the panel returns to Happ-class clients.
++bool needsXrayJsonRetry(String body) {
++  final summary = subscriptionBodySummary(body);
++  return summary['format'] == 'base64-links' &&
++      (summary['loopbackLinks'] as int? ?? 0) > 0;
++}
++
+ /// Gives the inspector a readable second view for Base64 subscriptions.
+ String? decodedSubscriptionResponse(String body) {
+   final text = body.trim();
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 1d53814..45d169a 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: bmray
+ description: BMray — клиент подписок sing-box для Android и iOS.
+ publish_to: none
+-version: 0.2.9+20
++version: 0.2.10+21
+ 
+ environment:
+   sdk: '>=3.12.0 <4.0.0'
+diff --git a/test/subscription_identity_test.dart b/test/subscription_identity_test.dart
+index b7c45b9..8b549bb 100644
+--- a/test/subscription_identity_test.dart
++++ b/test/subscription_identity_test.dart
+@@ -15,6 +15,10 @@ void main() {
+     expect(headers['x-hwid'], identity.hwid);
+     expect(headers['user-agent'], 'BMray/android/0.2.4');
+     expect(headers['cookie'], 'BMray=BMray-0123456789');
++    expect(identity.xrayJsonUserAgent, 'Happ BMray/android/0.2.4');
++    expect(RegExp(r'^happ', caseSensitive: false)
++        .hasMatch(identity.xrayJsonUserAgent), true);
++    expect(headers['user-agent'], 'BMray/android/0.2.4');
+     expect(SubscriptionIdentity.validUserAgent('BMray\r\nExtra: bad'), false);
+   });
+ 
+diff --git a/test/xray_template_test.dart b/test/xray_template_test.dart
+index b089b8d..56386d6 100644
+--- a/test/xray_template_test.dart
++++ b/test/xray_template_test.dart
+@@ -200,6 +200,18 @@ void main() {
+     expect(decodedSubscriptionResponse(body), '$realityLink\n$realityLink');
+   });
+ 
++  test('only Base64 subscriptions with local template hosts trigger JSON retry', () {
++    const local = 'vless://00000000-0000-4000-8000-000000000001@127.0.0.1:237'
++        '?type=xhttp&security=tls#Auto';
++    const remote = 'vless://00000000-0000-4000-8000-000000000001@vpn.example.com:443'
++        '?type=xhttp&security=reality#Remote';
++    expect(needsXrayJsonRetry(base64Encode(utf8.encode('$remote\n$local'))), true);
++    expect(needsXrayJsonRetry(base64Encode(utf8.encode(remote))), false);
++    expect(needsXrayJsonRetry('$remote\n$local'), false);
++    expect(needsXrayJsonRetry(xrayFixture), false);
++    expect(parseXrayTemplate(xrayFixture)!.nodes.first['type'], 'auto');
++  });
++
+   test('server subtitles use imported transport and security', () {
+     final tcp = parseShareLink(realityLink)!;
+     expect(nodeLabel(tcp), 'VLESS / TCP / REALITY');
