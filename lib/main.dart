@@ -453,7 +453,8 @@ class _HomePageState extends State<HomePage> {
       final endpoints = <String, Map<String, dynamic>>{};
       if (outbounds is List) {
         for (final outbound in outbounds) {
-          final vnext = outbound is Map ? (outbound['settings'] as Map?)?['vnext'] : null;
+          final settings = outbound is Map ? outbound['settings'] : null;
+          final vnext = settings is Map ? settings['vnext'] : null;
           if (vnext is! List || vnext.isEmpty || vnext.first is! Map) continue;
           final target = vnext.first as Map;
           final host = target['address']?.toString();

@@ -36,7 +36,8 @@ XrayBridge buildXrayBridge(Map<String, dynamic> node, {
       : null;
   // Xray requires the VLESS encryption field even in older client templates.
   for (final entry in templateOutbounds ?? [outbound]) {
-    final servers = entry is Map ? (entry['settings'] as Map?)?['vnext'] : null;
+    final settings = entry is Map ? entry['settings'] : null;
+    final servers = settings is Map ? settings['vnext'] : null;
     if (servers is List) {
       for (final server in servers) {
         final users = server is Map ? server['users'] : null;
