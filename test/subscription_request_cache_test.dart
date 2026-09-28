@@ -35,6 +35,18 @@ void main() {
     expect(summary['balancerCount'], 1);
   });
 
+  test('HTML subscription response is classified without copying page content', () {
+    const html = '<!doctype html><html><head><title>private-token</title>'
+        '</head><body>Checking your browser cf-chl-private-token</body></html>';
+    final summary = subscriptionBodySummary(html);
+    expect(summary, {'format': 'html', 'pageKind': 'challenge'});
+    expect(jsonEncode(summary), isNot(contains('private-token')));
+    expect(looksLikeHtmlSubscriptionResponse(' <HTML><body></body></HTML>'), true);
+    expect(looksLikeHtmlSubscriptionResponse('{"html":"<html>"}'), false);
+    expect(subscriptionBodySummary('<html><form><input type="password"></form></html>')
+        ['pageKind'], 'login');
+  });
+
   test('request journal stays within configured cache limit', () async {
     final dir = await Directory.systemTemp.createTemp('bmray-cache-test');
     try {
