@@ -175,6 +175,7 @@ class SubscriptionStore {
     }
     final downloaded = await _downloadPreferXrayJson(normalized);
     final parsed = _parse(downloaded.body);
+    _attachOriginalHosts(parsed.nodes, downloaded.originalBody);
     await requestLog.append({'event': 'parse', 'id': downloaded.id,
       'format': subscriptionBodySummary(downloaded.body)['format'],
       'nodeCount': parsed.nodes.length,
@@ -211,6 +212,7 @@ class SubscriptionStore {
     }
     final downloaded = await _downloadPreferXrayJson(Uri.parse(item.url));
     final parsed = _parse(downloaded.body);
+    _attachOriginalHosts(parsed.nodes, downloaded.originalBody);
     await requestLog.append({'event': 'parse', 'id': downloaded.id,
       'format': subscriptionBodySummary(downloaded.body)['format'],
       'nodeCount': parsed.nodes.length,
@@ -251,6 +253,31 @@ class SubscriptionStore {
     final assembled = injectRemnawaveTemplate(raw, item.nodes, tag);
     item.nodes[index] = assembled;
     item.autoTemplates = {...item.autoTemplates, tag: raw};
+  }
+
+  void _attachOriginalHosts(List<Map<String, dynamic>> nodes, String? originalBody) {
+    if (originalBody == null) return;
+    final hosts = parseSubscription(originalBody, includeUnsupported: true)
+        .where(isLocalTemplateHost).toList();
+    final autos = nodes.where((node) => node['type'] == 'auto').toList();
+    final used = <int>{};
+    for (final auto in autos) {
+      final name = auto['tag']?.toString().trim() ?? '';
+      var match = hosts.indexWhere((host) =>
+          host['tag']?.toString().trim() == name &&
+          !used.contains(hosts.indexOf(host)));
+      if (match < 0 && hosts.length == autos.length) {
+        match = autos.indexOf(auto);
+      }
+      if (match >= 0 && match < hosts.length && used.add(match)) {
+        final host = hosts[match];
+        auto['_origin_node'] = {
+          'type': host['type'],
+          if (host['transport'] is Map) 'transport': host['transport'],
+          if (host['tls'] is Map) 'tls': host['tls'],
+        };
+      }
+    }
   }
 
   ({List<Map<String, dynamic>> nodes, String? name, String? notice,
@@ -327,15 +354,20 @@ class SubscriptionStore {
   }
 
   Future<({String id, String body, String? title, String? announce,
-      String? userInfo, String? updateInterval})> _downloadPreferXrayJson(
+      String? userInfo, String? updateInterval, String? originalBody})> _downloadPreferXrayJson(
           Uri initial) async {
     final original = await _download(initial);
-    if (!needsXrayJsonRetry(original.body)) return original;
+    if (!needsXrayJsonRetry(original.body)) return (
+      id: original.id, body: original.body, title: original.title,
+      announce: original.announce, userInfo: original.userInfo,
+      updateInterval: original.updateInterval, originalBody: null);
     final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
     if (subscriptionIdentity.isHappUserAgent) {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'reason': 'base64-loopback-template', 'result': 'custom-happ-agent-kept'});
-      return original;
+      return (id: original.id, body: original.body, title: original.title,
+        announce: original.announce, userInfo: original.userInfo,
+        updateInterval: original.updateInterval, originalBody: null);
     }
     await requestLog.append({'event': 'compatibility', 'id': original.id,
       'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
@@ -347,11 +379,17 @@ class SubscriptionStore {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'retryId': retried.id, 'result': usable ? 'xray-json' : 'original-kept',
         'format': subscriptionBodySummary(retried.body)['format']});
-      return usable ? retried : original;
+      final selected = usable ? retried : original;
+      return (id: selected.id, body: selected.body, title: selected.title,
+        announce: selected.announce, userInfo: selected.userInfo,
+        updateInterval: selected.updateInterval,
+        originalBody: usable ? original.body : null);
     } catch (error) {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'result': 'original-kept', 'retryError': error.runtimeType.toString()});
-      return original;
+      return (id: original.id, body: original.body, title: original.title,
+        announce: original.announce, userInfo: original.userInfo,
+        updateInterval: original.updateInterval, originalBody: null);
     }
   }
 

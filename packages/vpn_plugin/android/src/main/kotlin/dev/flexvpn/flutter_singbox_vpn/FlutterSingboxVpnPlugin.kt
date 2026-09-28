@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.content.pm.ApplicationInfo
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -126,6 +127,42 @@ class FlutterSingboxVpnPlugin :
                         NetworkCapabilities.TRANSPORT_VPN)
                 } == true
                 result.success(activeVpn && SingBoxVpnService.state != "connected")
+            }
+            "listApps" -> {
+                val pm = context.packageManager
+                val apps = pm.getInstalledApplications(0).asSequence()
+                    .filter { it.packageName != context.packageName }
+                    .map { app -> mapOf(
+                        "packageName" to app.packageName,
+                        "label" to pm.getApplicationLabel(app).toString(),
+                        "system" to ((app.flags and (ApplicationInfo.FLAG_SYSTEM or
+                            ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0),
+                    ) }
+                    .sortedBy { it["label"].toString().lowercase() }
+                    .toList()
+                result.success(apps)
+            }
+            "getPerAppSettings" -> {
+                val prefs = context.getSharedPreferences("bmray-vpn", Context.MODE_PRIVATE)
+                result.success(mapOf(
+                    "mode" to (prefs.getString("per_app_mode", "off") ?: "off"),
+                    "packages" to prefs.getStringSet("per_app_packages", emptySet())!!.toList(),
+                ))
+            }
+            "setPerAppSettings" -> {
+                val mode = call.argument<String>("mode") ?: "off"
+                val packages = call.argument<List<String>>("packages") ?: emptyList()
+                if (mode !in listOf("off", "only", "bypass") ||
+                    (mode == "only" && packages.isEmpty())) {
+                    result.error("invalid_per_app", "Выберите хотя бы одно приложение", null)
+                } else {
+                    context.getSharedPreferences("bmray-vpn", Context.MODE_PRIVATE)
+                        .edit().putString("per_app_mode", mode)
+                        .putStringSet("per_app_packages", packages.filter {
+                            it != context.packageName && it.isNotBlank()
+                        }.toSet()).apply()
+                    result.success(null)
+                }
             }
             "status" -> result.success(mapOf(
                 "state" to SingBoxVpnService.state,

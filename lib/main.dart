@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,11 +15,13 @@ import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
 import 'json_config_page.dart';
+import 'appearance.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await appearance.load();
   runApp(const BMrayApp());
 }
 
@@ -26,26 +29,14 @@ class BMrayApp extends StatelessWidget {
   const BMrayApp({super.key});
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: appearance,
+    builder: (context, _) => MaterialApp(
     title: 'BMray',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF6179FF),
-        brightness: Brightness.dark,
-        surface: const Color(0xFF1D2538),
-      ),
-      scaffoldBackgroundColor: const Color(0xFF101827),
-      cardTheme: const CardThemeData(
-        color: Color(0xFF1D2538),
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(20))),
-      ),
-    ),
+    theme: appearance.theme,
     home: const HomePage(),
-  );
+  ));
 }
 
 class HomePage extends StatefulWidget {
@@ -63,8 +54,12 @@ class _HomePageState extends State<HomePage> {
   static const _cacheLimitKey = 'bmray.subscriptionCacheLimitMb';
   static const _selectedSubscriptionKey = 'bmray.selectedSubscription';
   static const _selectedNodeKey = 'bmray.selectedNode';
+  static const _showSystemAppsKey = 'bmray.showSystemApps';
   final _hwidInput = TextEditingController();
   final _userAgentInput = TextEditingController();
+  final _appSearch = TextEditingController();
+  final _themeName = TextEditingController();
+  final _themeJson = TextEditingController();
   Future<void> _selectionWrite = Future<void>.value();
   StreamSubscription<VpnStatus>? _statusSubscription;
   Timer? _uptimeTimer;
@@ -79,13 +74,15 @@ class _HomePageState extends State<HomePage> {
   VpnStatus _status = const VpnStatus.disconnected();
   bool _busy = false;
   bool _pingBusy = false;
+  int _pingEpoch = 0;
   PingMethod _pingMethod = PingMethod.proxyGet;
   int _proxyTimeoutSeconds = 4;
   int _cacheLimitMb = 25;
   late Future<int> _cacheSize = _store.requestLog.sizeBytes();
   late Future<String> _requestLogs = _store.requestLog.read();
   // 0: servers, 1: settings, 2: ping, 3: information, 4: core logs,
-  // 5: user agent, 6: cache, 7: subscription requests.
+  // 5: user agent, 6: cache, 7: subscription requests,
+  // 8: per-app VPN, 9: language, 10: themes.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
   late final Future<String> _appVersion = PackageInfo.fromPlatform().then(
@@ -94,6 +91,11 @@ class _HomePageState extends State<HomePage> {
   final Map<String, int?> _latencies = {};
   final Map<String, String> _pingErrors = {};
   String? _error;
+  String _t(String ru, String en) => appearance.text(ru, en);
+  String _perAppMode = 'off';
+  final Set<String> _perAppPackages = {};
+  bool _showSystemApps = false;
+  List<Map<String, dynamic>> _installedApps = [];
 
   Subscription? get _selected {
     for (final item in _subscriptions) {
@@ -144,15 +146,27 @@ class _HomePageState extends State<HomePage> {
       final identity = await SubscriptionIdentity.load();
       _store.identity = identity;
       final status = await _vpn.currentStatus();
+      var perApp = (mode: 'off', packages: <String>[]);
+      var apps = <Map<String, dynamic>>[];
+      if (Platform.isAndroid) {
+        try {
+          perApp = await _vpn.perAppSettings();
+          apps = await _vpn.installedApps();
+        } catch (_) {
+          // An old native plugin still allows saved subscriptions to load.
+        }
+      }
       String? storedTimeout;
       String? storedSubscription;
       String? storedNode;
       String? storedCacheLimit;
+      String? showSystemApps;
       try {
         storedTimeout = await _settingsStorage.read(key: _proxyTimeoutKey);
         storedSubscription = await _settingsStorage.read(key: _selectedSubscriptionKey);
         storedNode = await _settingsStorage.read(key: _selectedNodeKey);
         storedCacheLimit = await _settingsStorage.read(key: _cacheLimitKey);
+        showSystemApps = await _settingsStorage.read(key: _showSystemAppsKey);
       } catch (_) {
         // Keep the default when a preference cannot be read.
       }
@@ -163,6 +177,10 @@ class _HomePageState extends State<HomePage> {
       if (mounted)
         setState(() {
           _cacheLimitMb = _store.requestLog.limitMb;
+          _perAppMode = perApp.mode;
+          _perAppPackages.addAll(perApp.packages);
+          _showSystemApps = showSystemApps == 'true';
+          _installedApps = apps;
           _cacheSize = _store.requestLog.sizeBytes();
           _hwidInput.text = identity.hwid;
           _userAgentInput.text = identity.userAgent;
@@ -194,6 +212,9 @@ class _HomePageState extends State<HomePage> {
     _subscriptionTimer?.cancel();
     _hwidInput.dispose();
     _userAgentInput.dispose();
+    _appSearch.dispose();
+    _themeName.dispose();
+    _themeJson.dispose();
     super.dispose();
   }
 
@@ -202,13 +223,13 @@ class _HomePageState extends State<HomePage> {
       builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(leading: const Icon(Icons.link_rounded),
-            title: const Text('Добавить ссылку или JSON'),
+            title: Text(_t('Добавить ссылку или JSON', 'Add link or JSON')),
             onTap: () => Navigator.pop(ctx, 'manual')),
           ListTile(leading: const Icon(Icons.content_paste_rounded),
-            title: const Text('Импортировать из буфера обмена'),
+            title: Text(_t('Импортировать из буфера обмена', 'Import from clipboard')),
             onTap: () => Navigator.pop(ctx, 'clipboard')),
           ListTile(leading: const Icon(Icons.qr_code_scanner_rounded),
-            title: const Text('Сканировать QR'),
+            title: Text(_t('Сканировать QR', 'Scan QR')),
             onTap: () => Navigator.pop(ctx, 'qr')),
         ],
       )),
@@ -421,6 +442,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _refresh(Subscription item) async {
+    if (_pingBusy) {
+      ++_pingEpoch;
+      setState(() => _error = null);
+    }
     await _perform(() async {
       try {
         await _refreshSubscription(item);
@@ -769,6 +794,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _ping(Subscription item, List<int> indices) async {
     if (_pingBusy || _busy || _status.state.isBusy) return;
+    final epoch = ++_pingEpoch;
+    final nodes = List<Map<String, dynamic>>.of(item.nodes);
     setState(() {
       _pingBusy = true;
       _error = null;
@@ -785,15 +812,17 @@ class _HomePageState extends State<HomePage> {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       if (Platform.isAndroid) {
-        await _prepareNetworkForPing(item, indices);
+        await _prepareNetworkForPing(item, indices, epoch);
       }
+      if (epoch != _pingEpoch) return;
       if (await _vpn.otherVpnActive()) {
         throw const FormatException('Выключите VPN другого приложения в настройках Android перед проверкой.');
       }
       for (var start = 0; start < indices.length; start += 3) {
+        if (epoch != _pingEpoch) break;
         final batch = indices.skip(start).take(3).toList();
-        final values = await Future.wait(batch.map((i) => _probe(item.nodes[i])));
-        if (!mounted || method != _pingMethod) break;
+        final values = await Future.wait(batch.map((i) => _probe(nodes[i])));
+        if (!mounted || epoch != _pingEpoch || method != _pingMethod) break;
         setState(() {
           for (var j = 0; j < batch.length; j++) {
             _latencies[_delayKey(item, batch[j])] = values[j].delay;
@@ -804,14 +833,15 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _error = error is FormatException
+      if (mounted && epoch == _pingEpoch) setState(() => _error = error is FormatException
           ? error.message : 'Проверка серверов не удалась.');
     } finally {
       if (mounted) setState(() => _pingBusy = false);
     }
   }
 
-  Future<void> _prepareNetworkForPing(Subscription item, List<int> indices) async {
+  Future<void> _prepareNetworkForPing(
+      Subscription item, List<int> indices, int epoch) async {
     final candidates = <Map<String, dynamic>>[
       for (final index in indices)
         if (index >= 0 && index < item.nodes.length) item.nodes[index],
@@ -820,6 +850,7 @@ class _HomePageState extends State<HomePage> {
     String? configJson;
     String? xrayJson;
     for (final node in candidates) {
+      if (epoch != _pingEpoch) return;
       final host = node['server']?.toString() ?? '';
       if (node['_unsupported_reason'] != null || host.isEmpty ||
           host == 'localhost' ||
@@ -851,6 +882,7 @@ class _HomePageState extends State<HomePage> {
       attempted = true;
       await _vpn.start(configJson, name: 'BMray', xrayConfig: xrayJson);
       for (var attempt = 0; attempt < 100; attempt++) {
+        if (epoch != _pingEpoch) return;
         final status = await _vpn.currentStatus();
         if (status.state == VpnState.connected) break;
         if (status.state == VpnState.error) {
@@ -925,12 +957,12 @@ class _HomePageState extends State<HomePage> {
     final canChange =
         !_busy && !_pingBusy && !_autoRefreshing && !_status.state.isBusy;
     final label = switch (_status.state) {
-      VpnState.connected => 'Подключено',
-      VpnState.connecting => 'Подключение…',
-      VpnState.disconnecting => 'Отключение…',
-      VpnState.reasserting => 'Восстановление…',
-      VpnState.error => 'Ошибка подключения',
-      _ => 'Не подключено',
+      VpnState.connected => _t('Подключено', 'Connected'),
+      VpnState.connecting => _t('Подключение…', 'Connecting…'),
+      VpnState.disconnecting => _t('Отключение…', 'Disconnecting…'),
+      VpnState.reasserting => _t('Восстановление…', 'Reconnecting…'),
+      VpnState.error => _t('Ошибка подключения', 'Connection error'),
+      _ => _t('Не подключено', 'Disconnected'),
     };
     return PopScope(
       canPop: _pageIndex == 0,
@@ -939,9 +971,9 @@ class _HomePageState extends State<HomePage> {
       },
       child: Scaffold(
       appBar: AppBar(
-        backgroundColor: const Color(0xFF101827),
+        backgroundColor: appearance.backgroundColors.first,
         leading: IconButton(
-          tooltip: _pageIndex == 0 ? 'Настройки' : 'Назад',
+          tooltip: _pageIndex == 0 ? _t('Настройки', 'Settings') : _t('Назад', 'Back'),
           onPressed: () => setState(() {
             if (_pageIndex == 0) {
               _pageIndex = 1;
@@ -958,13 +990,20 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 10),
           const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
         ]) : Text(switch (_pageIndex) {
-          1 => 'Настройки', 2 => 'Пинг', 3 => 'Информация',
-          4 => 'Логи', 5 => 'User-Agent', 6 => 'Кэш',
-          _ => 'Запросы подписки',
+          1 => _t('Настройки', 'Settings'),
+          2 => _t('Пинг', 'Ping'),
+          3 => _t('Информация', 'Information'),
+          4 => _t('Журнал подключения', 'Connection log'),
+          5 => 'User-Agent', 6 => _t('Кэш', 'Cache'),
+          7 => _t('Запросы подписки', 'Subscription requests'),
+          8 => _t('Прокси для приложений', 'Per-app proxy'),
+          9 => _t('Язык', 'Language'),
+          10 => _t('Темы', 'Themes'),
+          _ => _t('Настройки', 'Settings'),
         }),
         actions: [
           if (_pageIndex == 0) IconButton(
-            tooltip: 'Добавить', onPressed: _busy || _autoRefreshing ? null : _showImportMenu,
+            tooltip: _t('Добавить', 'Add'), onPressed: _busy || _autoRefreshing ? null : _showImportMenu,
             icon: const Icon(Icons.add_circle_outline_rounded)),
         ],
       ),
@@ -975,7 +1014,11 @@ class _HomePageState extends State<HomePage> {
         4 => _logsView(),
         5 => _userAgentView(),
         6 => _cacheView(),
-        _ => _subscriptionRequestsView(),
+        7 => _subscriptionRequestsView(),
+        8 => _perAppView(),
+        9 => _languageView(),
+        10 => _themesView(),
+        _ => _settingsView(),
       }) : SafeArea(child: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
           SizedBox(
@@ -993,12 +1036,13 @@ class _HomePageState extends State<HomePage> {
                     style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)))),
             ),
             const SizedBox(height: 8),
-            const Text('Подписки и серверы', style: TextStyle(
-              fontSize: 20, fontWeight: FontWeight.w700)),
+            Text(_t('Подписки и серверы', 'Subscriptions and servers'),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
             if (_subscriptions.isEmpty)
               Card(child: Padding(padding: const EdgeInsets.all(18), child: Text(
-                'Нажмите +, чтобы добавить подписку или ссылку сервера.',
+                _t('Нажмите +, чтобы добавить подписку или ссылку сервера.',
+                    'Tap + to add a subscription or server link.'),
                 style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)))),
             for (final subscription in _subscriptions) Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -1024,15 +1068,20 @@ class _HomePageState extends State<HomePage> {
       final diameter = (constraints.maxHeight * 0.46).clamp(64.0, 144.0).toDouble();
       return Container(
         width: double.infinity,
-        color: const Color(0xFF101827),
+        decoration: BoxDecoration(gradient: LinearGradient(
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          transform: GradientRotation(
+            ((appearance.palette['backgroundGradientRotationAngle'] as num?) ?? 0)
+                .toDouble() * math.pi / 180),
+          colors: appearance.backgroundColors)),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Semantics(
             button: true,
             label: isActive ? 'Отключить VPN' : 'Подключить VPN',
             child: Material(
-              color: const Color(0xFF1D2538),
+              color: appearance.color('buttonColor'),
               shape: CircleBorder(side: BorderSide(
-                color: isActive ? const Color(0xFF53E0C3) : const Color(0xFF7976F6),
+                color: appearance.color('settingsControlsTintColor'),
                 width: 5,
               )),
               elevation: 10,
@@ -1044,22 +1093,25 @@ class _HomePageState extends State<HomePage> {
                     ? const CircularProgressIndicator()
                     : Icon(Icons.power_settings_new_rounded,
                         size: diameter * 0.43,
-                        color: isActive ? const Color(0xFF53E0C3)
-                            : const Color(0xFFB6B9FF))),
+                        color: appearance.color('powerIconColor'))),
                 ),
               ),
             ),
           ),
           const SizedBox(height: 8),
           Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
+                color: appearance.color('serverRowTitleTextColor'))),
           if (isActive && _connectedAt != null) Text(_uptimeLabel(),
-            style: const TextStyle(fontSize: 13, color: Color(0xFF60DFC3))),
+            style: TextStyle(fontSize: 13,
+                color: appearance.color('buttonTimerColor'))),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Text(node?['tag']?.toString() ??
-                (item?.name ?? 'Добавьте подписку, чтобы начать'),
+                (item?.name ?? _t('Добавьте подписку, чтобы начать',
+                    'Add a subscription to begin')),
               maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Color(0xFFB4BDDD)))),
+              style: TextStyle(fontSize: 12,
+                  color: appearance.color('serverRowSubTitleTextColor')))),
         ]),
       );
     });
@@ -1075,19 +1127,34 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _settingsView() => ListView(children: [
-    _settingsHeading('Подписка'),
+    _settingsHeading(_t('Подписка', 'Subscription')),
     _settingsEntry('User-Agent', 'HWID, User-Agent и Cookie BMray',
         Icons.badge_outlined, 5),
-    _settingsEntry('Логи запросов подписки', 'HTTP-ответы и выбор формата подписки',
+    _settingsHeading(_t('Проверка соединения', 'Connection diagnostics')),
+    _settingsEntry(_t('Пинг', 'Ping'), 'Proxy GET, TCP, ICMP', Icons.speed_rounded, 2),
+    _settingsEntry(_t('Логи запросов подписки', 'Subscription requests'),
+        _t('HTTP-ответы и выбор формата подписки', 'HTTP responses and formats'),
         Icons.receipt_long_outlined, 7),
-    _settingsHeading('Проверка соединения'),
-    _settingsEntry('Пинг', 'Proxy GET, TCP и ICMP', Icons.speed_rounded, 2),
-    _settingsHeading('Приложение'),
-    _settingsEntry('Кэш', 'Лимит размера и очистка журнала',
+    _settingsEntry(_t('Журнал подключения', 'Connection log'),
+        _t('Логи ядра и VPN', 'Core and VPN logs'),
+        Icons.description_outlined, 4),
+    _settingsHeading(_t('Настройки туннеля', 'Tunnel settings')),
+    _settingsEntry(_t('Прокси для выбранных приложений', 'Per-app proxy'),
+        _t('Все приложения, только выбранные или обход',
+          'All apps, selected apps or bypass'), Icons.apps_rounded, 8),
+    _settingsHeading(_t('Кастомизация', 'Customization')),
+    _settingsEntry(_t('Язык', 'Language'),
+        _t('Системный, русский или английский', 'System, Russian or English'),
+        Icons.language_rounded, 9),
+    _settingsEntry(_t('Темы', 'Themes'),
+        _t('Светлая, тёмная и собственные темы', 'Light, dark and custom themes'),
+        Icons.palette_outlined, 10),
+    _settingsHeading(_t('Приложение', 'Application')),
+    _settingsEntry(_t('Кэш', 'Cache'),
+        _t('Лимит размера и очистка журнала', 'Size limit and clear log'),
         Icons.storage_rounded, 6),
-    _settingsEntry('Журнал подключения', 'Логи ядра и VPN',
-        Icons.receipt_long_outlined, 4),
-    _settingsEntry('Информация', 'Версии и сведения о системе',
+    _settingsEntry(_t('Информация', 'Information'),
+        _t('Версии и сведения о системе', 'Versions and system details'),
         Icons.info_outline_rounded, 3),
   ]);
 
@@ -1174,8 +1241,9 @@ class _HomePageState extends State<HomePage> {
 
   Widget _settingsHeading(String title) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 28, 20, 8),
-    child: Text(title, style: const TextStyle(
-      fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF9794FF))),
+    child: Text(title, style: TextStyle(fontSize: 16,
+      fontWeight: FontWeight.w700,
+      color: appearance.color('settingsControlsTintColor'))),
   );
 
   Widget _settingsEntry(String title, String subtitle, IconData icon, int page) =>
@@ -1237,30 +1305,70 @@ class _HomePageState extends State<HomePage> {
   Widget _pingSettingsView() {
     final description = switch (_pingMethod) {
       PingMethod.proxyGet =>
-        'Proxy GET: выполняет настоящий HTTPS GET через выбранный сервер. '
+        _t('Proxy GET: выполняет настоящий HTTPS GET через выбранный сервер. '
         'Проверяет, что прокси подключается и передаёт данные.',
+        'Proxy GET sends an HTTPS request through the selected server and '
+        'checks that the proxy connects and transfers data.'),
       PingMethod.tcp =>
-        'TCP: измеряет время прямого соединения с адресом и портом сервера. '
+        _t('TCP: измеряет время прямого соединения с адресом и портом сервера. '
         'Не проверяет авторизацию и работу прокси.',
+        'TCP measures a direct connection to the server. It does not '
+        'verify proxy authentication.'),
       PingMethod.icmp =>
-        'ICMP: отправляет эхо-запрос на адрес сервера без прокси. '
+        _t('ICMP: отправляет эхо-запрос на адрес сервера без прокси. '
         'Сервер может не отвечать на ICMP, даже если подключение работает. '
         'Перед проверкой отключите VPN.',
+        'ICMP sends an echo request directly to the server. It may fail '
+        'even when the proxy works.'),
     };
     return ListView(padding: const EdgeInsets.all(16), children: [
-      const Text('Способ проверки', style: TextStyle(
+      Text(_t('Способ проверки', 'Ping method'), style: const TextStyle(
         fontSize: 20, fontWeight: FontWeight.w700)),
       const SizedBox(height: 16),
-      SingleChildScrollView(scrollDirection: Axis.horizontal,
-        child: SegmentedButton<PingMethod>(
-          segments: const [
-            ButtonSegment(value: PingMethod.proxyGet, label: Text('Proxy GET')),
-            ButtonSegment(value: PingMethod.tcp, label: Text('TCP')),
-            ButtonSegment(value: PingMethod.icmp, label: Text('ICMP')),
-          ],
-          selected: {_pingMethod},
-          onSelectionChanged: _pingBusy ? null : (values) =>
-              setState(() => _pingMethod = values.first),
+      for (final option in PingMethod.values) Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Material(
+          color: _pingMethod == option ? appearance.color('selectedServerRowColor') :
+              Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: _pingBusy ? null : () => setState(() => _pingMethod = option),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: _pingMethod == option
+                    ? Theme.of(context).colorScheme.primary : Colors.transparent,
+                    width: 1.5),
+              ),
+              child: Row(children: [
+                Icon(switch (option) {
+                  PingMethod.proxyGet => Icons.public_rounded,
+                  PingMethod.tcp => Icons.cable_rounded,
+                  PingMethod.icmp => Icons.graphic_eq_rounded,
+                }, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 16),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(switch (option) {
+                      PingMethod.proxyGet => 'Proxy GET',
+                      PingMethod.tcp => 'TCP',
+                      PingMethod.icmp => 'ICMP',
+                    }, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    Text(switch (option) {
+                      PingMethod.proxyGet => _t('Запрос через прокси', 'Request through proxy'),
+                      PingMethod.tcp => _t('Прямое TCP соединение', 'Direct TCP connection'),
+                      PingMethod.icmp => _t('Эхо-запрос до адреса', 'Echo request to host'),
+                    }, style: TextStyle(fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  ])),
+                if (_pingMethod == option) Container(width: 8, height: 8,
+                  decoration: BoxDecoration(shape: BoxShape.circle,
+                    color: Theme.of(context).colorScheme.primary)),
+              ]),
+            ),
+          ),
         ),
       ),
       const SizedBox(height: 16),
@@ -1293,6 +1401,184 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {
       if (mounted) setState(() => _error = 'Не удалось сохранить тайм-аут пинга.');
     }
+  }
+
+  Future<void> _savePerAppSettings() => _perform(() async {
+    if (_perAppMode == 'only' && _perAppPackages.isEmpty) {
+      throw const FormatException('Выберите хотя бы одно приложение для VPN.');
+    }
+    await _vpn.setPerAppSettings(_perAppMode, _perAppPackages);
+    if (_status.state == VpnState.connected) {
+      await _vpn.stop();
+      await _waitForDisconnect();
+      await _startSelected();
+    }
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Настройки приложений сохранены')));
+  });
+
+  Widget _perAppView() {
+    if (!Platform.isAndroid) return Center(child: Text(_t(
+      'Выбор приложений доступен в версии для Android.',
+      'Per-app proxy is available on Android.')));
+    final descriptions = {
+      'off': _t('Весь трафик приложений идёт через VPN.',
+          'All app traffic goes through VPN.'),
+      'only': _t('Только выбранные приложения идут через VPN; остальные напрямую.',
+          'Selected apps use VPN; all others connect directly.'),
+      'bypass': _t('Выбранные приложения работают напрямую; остальные через VPN.',
+          'Selected apps connect directly; all others use VPN.'),
+    };
+    final query = _appSearch.text.trim().toLowerCase();
+    final shown = _installedApps.where((app) =>
+      (_showSystemApps || app['system'] != true) &&
+      (query.isEmpty || app['label'].toString().toLowerCase().contains(query) ||
+        app['packageName'].toString().toLowerCase().contains(query))).toList();
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Text(_t('Прокси для выбранных приложений', 'Per-app proxy'),
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 12),
+      for (final mode in ['off', 'only', 'bypass']) Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Card(child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => setState(() => _perAppMode = mode),
+          child: Padding(padding: const EdgeInsets.all(16), child: Row(children: [
+            Icon(mode == 'off' ? Icons.public_rounded :
+                mode == 'only' ? Icons.filter_alt_rounded : Icons.route_rounded,
+              color: _perAppMode == mode ? Theme.of(context).colorScheme.primary : null),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(switch (mode) {
+                  'only' => _t('Вкл', 'On'),
+                  'bypass' => _t('Обход', 'Bypass'),
+                  _ => _t('Выкл', 'Off'),
+                }, style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text(descriptions[mode]!, style: const TextStyle(fontSize: 12)),
+              ])),
+            if (_perAppMode == mode) Icon(Icons.circle,
+                size: 12, color: Theme.of(context).colorScheme.primary),
+          ])),
+        )),
+      ),
+      const SizedBox(height: 8),
+      SwitchListTile(title: Text(_t('Показать системные приложения',
+          'Show system apps')),
+        value: _showSystemApps, onChanged: (value) async {
+          setState(() => _showSystemApps = value);
+          await _settingsStorage.write(key: _showSystemAppsKey, value: '$value');
+        }),
+      TextField(controller: _appSearch, onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(labelText: _t('Найти приложение', 'Search apps'),
+          prefixIcon: const Icon(Icons.search_rounded))),
+      Padding(padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Text('${_t('Выбрано', 'Selected')}: ${_perAppPackages.length}')),
+      if (_installedApps.isEmpty) Text(_t('Список приложений недоступен.',
+          'App list is unavailable.')),
+      for (final app in shown) CheckboxListTile(
+        dense: true,
+        title: Text(app['label']?.toString() ?? ''),
+        subtitle: Text(app['packageName']?.toString() ?? ''),
+        value: _perAppPackages.contains(app['packageName']),
+        onChanged: (value) => setState(() {
+          final id = app['packageName']?.toString() ?? '';
+          if (value == true) _perAppPackages.add(id);
+          else _perAppPackages.remove(id);
+        }),
+      ),
+      const SizedBox(height: 12),
+      FilledButton(onPressed: _busy ? null : _savePerAppSettings,
+        child: Text(_t('Сохранить и применить', 'Save and apply'))),
+    ]);
+  }
+
+  Widget _languageView() => ListView(padding: const EdgeInsets.all(16), children: [
+    Text(_t('Язык приложения', 'App language'),
+      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+    const SizedBox(height: 12),
+    for (final entry in const [
+      ('auto', 'Автоматически', 'System language'),
+      ('ru', 'Русский', 'Russian'),
+      ('en', 'English', 'English'),
+    ]) Padding(padding: const EdgeInsets.only(bottom: 8),
+      child: Card(child: ListTile(
+        title: Text(_t(entry.$2, entry.$3)),
+        subtitle: entry.$1 == 'auto' ? Text(_t(
+          'Использовать язык устройства', 'Follow device language')) : null,
+        trailing: appearance.language == entry.$1
+          ? Icon(Icons.circle, size: 12, color: Theme.of(context).colorScheme.primary)
+          : null,
+        onTap: () async {
+          await appearance.setLanguage(entry.$1);
+          if (mounted) setState(() {});
+        },
+      ))),
+  ]);
+
+  Widget _themesView() {
+    final names = [...builtInThemes.keys, ...appearance.customThemes.keys];
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Text(_t('Темы оформления', 'Themes'),
+        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      for (final name in names) Padding(padding: const EdgeInsets.only(bottom: 8),
+        child: Card(child: ListTile(
+          leading: CircleAvatar(backgroundColor: AppearanceSettings.decodeColor(
+            ((appearance.customThemes[name] ?? builtInThemes[name])!
+                ['backgroundColors'] as List).first.toString())),
+          title: Text(switch (name) {
+            'dark' => _t('Тёмная', 'Dark'),
+            'light' => _t('Светлая', 'Light'),
+            _ => name,
+          }),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (appearance.themeId == name)
+              Icon(Icons.circle, size: 12,
+                color: Theme.of(context).colorScheme.primary),
+            if (appearance.customThemes.containsKey(name)) IconButton(
+              tooltip: _t('Удалить тему', 'Delete theme'),
+              icon: const Icon(Icons.delete_outline_rounded),
+              onPressed: () async {
+                await appearance.deleteCustom(name);
+                if (mounted) setState(() {});
+              }),
+          ]),
+          onTap: () async {
+            await appearance.setTheme(name);
+            if (mounted) setState(() {});
+          },
+        ))),
+      const SizedBox(height: 20),
+      Text(_t('Редактор собственной темы', 'Custom theme editor'),
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      Text(_t('Вставьте JSON с цветами в формате #RRGGBBAA. '
+        'Можно использовать конфигурацию темы Happ.',
+        'Paste theme JSON with #RRGGBBAA colors. Happ theme JSON is supported.')),
+      const SizedBox(height: 12),
+      TextField(controller: _themeName, maxLength: 40,
+        decoration: InputDecoration(labelText: _t('Название темы', 'Theme name'),
+          border: const OutlineInputBorder())),
+      TextField(controller: _themeJson, minLines: 5, maxLines: 12,
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+        decoration: InputDecoration(labelText: _t('JSON темы', 'Theme JSON'),
+          border: const OutlineInputBorder())),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.content_copy_rounded),
+        label: Text(_t('Загрузить текущую тему в редактор',
+          'Load current theme into editor')),
+        onPressed: () => setState(() => _themeJson.text =
+          const JsonEncoder.withIndent('  ').convert(appearance.palette))),
+      const SizedBox(height: 8),
+      FilledButton.icon(icon: const Icon(Icons.save_rounded),
+        label: Text(_t('Сохранить и применить', 'Save and apply')),
+        onPressed: () => _perform(() async {
+          await appearance.saveCustom(_themeName.text, _themeJson.text);
+          if (mounted) setState(() {});
+        })),
+    ]);
   }
 
   Widget _informationView() => FutureBuilder<String>(
@@ -1362,14 +1648,19 @@ class _HomePageState extends State<HomePage> {
     final description = item.notice ??
         (host != null && host.isNotEmpty ? host : 'Локальный профиль');
     final index = _subscriptions.indexOf(item);
-    final lastUpdated = item.lastUpdatedAt == null ? 'Не обновлялась' :
+    final lastUpdated = item.lastUpdatedAt == null ?
+        _t('Не обновлялась', 'Never updated') :
         _formatSubscriptionDate(item.lastUpdatedAt!);
-    final updateText = item.updateHours == null ? 'Автообновление выкл.' :
-        'Автообновление — ${item.updateHours} ч.';
-    return Card(child: Column(children: [
+    final updateText = item.updateHours == null ?
+        _t('Автообновление выкл.', 'Auto-update off') :
+        _t('Автообновление — ${item.updateHours} ч.',
+           'Auto-update — ${item.updateHours} h');
+    return Card(color: appearance.color('subsHeaderColor'),
+      child: Column(children: [
       Padding(padding: const EdgeInsets.fromLTRB(8, 8, 2, 4),
         child: Row(children: [
-          IconButton(tooltip: expanded ? 'Свернуть' : 'Развернуть',
+          IconButton(tooltip: expanded ? _t('Свернуть', 'Collapse') :
+              _t('Развернуть', 'Expand'),
             visualDensity: VisualDensity.compact,
             onPressed: () => setState(() {
               if (expanded) {
@@ -1398,11 +1689,13 @@ class _HomePageState extends State<HomePage> {
                 softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
             ]))),
-          IconButton(tooltip: item.pinned ? 'Открепить' : 'Закрепить',
+          IconButton(tooltip: item.pinned ? _t('Открепить', 'Unpin') :
+              _t('Закрепить', 'Pin'),
             onPressed: _busy || _autoRefreshing ? null : () => _toggleSubscriptionPin(item),
             icon: Icon(item.pinned ? Icons.push_pin_rounded :
                 Icons.push_pin_outlined, size: 19)),
-          PopupMenuButton<String>(tooltip: 'Действия с подпиской',
+          PopupMenuButton<String>(tooltip: _t('Действия с подпиской',
+              'Subscription actions'),
             onSelected: (action) {
               switch (action) {
                 case 'up': _moveSubscription(item, -1); break;
@@ -1411,17 +1704,17 @@ class _HomePageState extends State<HomePage> {
                 case 'remove': _remove(item); break;
               }
             }, itemBuilder: (_) => [
-              const PopupMenuItem(value: 'json',
-                child: Text('Ответ подписки')),
+              PopupMenuItem(value: 'json',
+                child: Text(_t('Ответ подписки', 'Subscription response'))),
               PopupMenuItem(value: 'up', enabled: !_busy && !_autoRefreshing && index > 0 &&
                   _subscriptions[index - 1].pinned == item.pinned,
-                child: const Text('Переместить вверх')),
+                child: Text(_t('Переместить вверх', 'Move up'))),
               PopupMenuItem(value: 'down', enabled: !_busy && !_autoRefreshing &&
                   index < _subscriptions.length - 1 &&
                   _subscriptions[index + 1].pinned == item.pinned,
-                child: const Text('Переместить вниз')),
+                child: Text(_t('Переместить вниз', 'Move down'))),
               PopupMenuItem(value: 'remove', enabled: canChange && !_status.state.isActive,
-                child: const Text('Удалить')),
+                child: Text(_t('Удалить', 'Remove'))),
             ]),
         ])),
       if (expanded) ...[
@@ -1433,7 +1726,7 @@ class _HomePageState extends State<HomePage> {
         if (item.traffic != null)
           Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Align(alignment: Alignment.centerLeft,
-              child: Text('Израсходовано: ${_formatTraffic(item.traffic!.used)} / '
+              child: Text('${_t('Израсходовано', 'Used')}: ${_formatTraffic(item.traffic!.used)} / '
                   '${item.traffic!.unlimited ? '∞' : _formatTraffic(item.traffic!.total)}',
                 style: const TextStyle(fontSize: 12,
                   color: Color(0xFF9DAEC7))))),
@@ -1442,12 +1735,13 @@ class _HomePageState extends State<HomePage> {
             Expanded(child: Text(description, maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, color: Color(0xFF9DAEC7)))),
-            IconButton(tooltip: 'Проверить все серверы',
+            IconButton(tooltip: _t('Проверить все серверы', 'Ping all servers'),
               onPressed: _pingBusy || _busy || _autoRefreshing || item.nodes.isEmpty ? null :
                 () => _ping(item, List.generate(item.nodes.length, (i) => i)),
               icon: const Icon(Icons.speed_rounded, size: 20)),
-            IconButton(tooltip: 'Обновить подписку',
-              onPressed: canChange && !_status.state.isActive && item.isRemote
+            IconButton(tooltip: _t('Обновить подписку', 'Refresh subscription'),
+              onPressed: !_busy && !_autoRefreshing &&
+                  (_pingBusy || !_status.state.isActive) && item.isRemote
                   ? () => _refresh(item) : null,
               icon: const Icon(Icons.refresh_rounded, size: 20)),
             Text('${item.nodes.length}', style: const TextStyle(
@@ -1488,10 +1782,12 @@ class _HomePageState extends State<HomePage> {
     final measured = _latencies.containsKey(key);
     final delay = _latencies[key];
     return Card(
-      color: selected ? const Color(0xFF28375C) : const Color(0xFF1D2538),
+      color: selected ? appearance.color('selectedServerRowColor') :
+          appearance.color('serverRowBackgroundColor'),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(20),
-        side: selected ? const BorderSide(color: Color(0xFF91A4FF), width: 1.5)
+        side: selected ? BorderSide(
+            color: appearance.color('settingsControlsTintColor'), width: 1.5)
             : BorderSide.none,
       ),
       child: InkWell(
@@ -1502,12 +1798,15 @@ class _HomePageState extends State<HomePage> {
           padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
           child: Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(node['tag']?.toString() ?? 'Сервер ${index + 1}',
+              Text(node['tag']?.toString() ?? _t('Сервер ${index + 1}',
+                  'Server ${index + 1}'),
                 maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600)),
+                style: TextStyle(fontWeight: FontWeight.w600,
+                  color: appearance.color('serverRowTitleTextColor'))),
               Text(nodeLabel(node), maxLines: 1, softWrap: false,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF9DAEC7))),
+                style: TextStyle(fontSize: 11,
+                    color: appearance.color('serverRowSubTitleTextColor'))),
               if (unsupported != null) Text(unsupported,
                 maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
@@ -1525,13 +1824,13 @@ class _HomePageState extends State<HomePage> {
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
             IconButton(
-              tooltip: 'Просмотреть конфигурацию',
+              tooltip: _t('Просмотреть конфигурацию', 'View config'),
               onPressed: () => _showNodeJson(item, index),
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.article_outlined, size: 19),
             ),
             IconButton(
-              tooltip: 'Проверить сервер',
+              tooltip: _t('Проверить сервер', 'Ping server'),
               onPressed: _pingBusy ? null : () => _ping(item, [index]),
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.speed_outlined, size: 19),

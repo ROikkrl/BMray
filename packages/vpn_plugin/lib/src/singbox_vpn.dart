@@ -63,6 +63,24 @@ class SingboxVpn {
     }
   }
 
+  Future<List<Map<String, dynamic>>> installedApps() async {
+    final apps = await _methods.invokeListMethod<dynamic>('listApps') ?? [];
+    return apps.whereType<Map>().map((item) =>
+        Map<String, dynamic>.from(item)).toList();
+  }
+
+  Future<({String mode, List<String> packages})> perAppSettings() async {
+    final value = await _methods.invokeMapMethod<String, dynamic>(
+        'getPerAppSettings') ?? {};
+    return (mode: value['mode']?.toString() ?? 'off',
+      packages: (value['packages'] as List? ?? []).map((e) => e.toString()).toList());
+  }
+
+  Future<void> setPerAppSettings(String mode, Iterable<String> packages) =>
+      _methods.invokeMethod<void>('setPerAppSettings', {
+        'mode': mode, 'packages': packages.toList(),
+      });
+
   /// One-shot current status.
   Future<VpnStatus> currentStatus() async {
     final res = await _methods.invokeMethod<dynamic>('status');

@@ -48,9 +48,26 @@ class BoxPlatformInterface(private val context: Context, private val service: Si
         val builder = vpnService.Builder()
         builder.setMtu(options.getMTU())
         builder.setSession("BMray")
-        // The separate Xray CLI cannot call VpnService.protect on its own sockets.
-        // Exclude only our app UID while it is running; all other apps use TUN.
-        if (vpnService.xrayActive) builder.addDisallowedApplication(context.packageName)
+        // VpnService supports either an allowlist or a denylist, never both.
+        val prefs = context.getSharedPreferences("bmray-vpn", Context.MODE_PRIVATE)
+        val mode = prefs.getString("per_app_mode", "off") ?: "off"
+        val packages = prefs.getStringSet("per_app_packages", emptySet())
+            .orEmpty().filter { it != context.packageName }.sorted()
+        if (mode == "only") {
+            if (packages.isEmpty()) throw IllegalStateException("Выберите приложения для VPN")
+            for (app in packages) {
+                try { builder.addAllowedApplication(app) }
+                catch (_: android.content.pm.PackageManager.NameNotFoundException) { /* removed */ }
+            }
+        } else {
+            val bypass = if (mode == "bypass") packages.toSet() else emptySet()
+            // The Xray sidecar shares our UID and must dial outside the TUN.
+            for (app in bypass + (if (vpnService.xrayActive) setOf(context.packageName)
+                else emptySet())) {
+                try { builder.addDisallowedApplication(app) }
+                catch (_: android.content.pm.PackageManager.NameNotFoundException) { /* removed */ }
+            }
+        }
 
         val v4 = options.getInet4Address()
         while (v4.hasNext()) {
