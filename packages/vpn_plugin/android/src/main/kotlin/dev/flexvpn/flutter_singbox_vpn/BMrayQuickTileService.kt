@@ -3,7 +3,6 @@ package dev.flexvpn.flutter_singbox_vpn
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
-import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -30,34 +29,7 @@ class BMrayQuickTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        when (SingBoxVpnService.state) {
-            "connected", "connecting", "reasserting" -> {
-                startService(Intent(this, SingBoxVpnService::class.java).apply {
-                    action = SingBoxVpnService.ACTION_STOP
-                })
-            }
-            "disconnecting" -> return
-            else -> {
-                val profile = QuickTileProfile.load(this)
-                val permissionGranted = try { VpnService.prepare(this) == null }
-                    catch (_: Exception) { false }
-                if (profile == null || !permissionGranted) {
-                    openAppForConnection()
-                    return
-                }
-                val intent = Intent(this, SingBoxVpnService::class.java).apply {
-                    action = SingBoxVpnService.ACTION_START
-                    putExtra(SingBoxVpnService.EXTRA_CONFIG, profile.singBox)
-                    profile.xray?.let { putExtra(SingBoxVpnService.EXTRA_XRAY_CONFIG, it) }
-                }
-                try {
-                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent)
-                    else startService(intent)
-                } catch (_: Exception) {
-                    openAppForConnection()
-                }
-            }
-        }
+        QuickVpnToggle.toggle(this, ::openAppForConnection)
         updateState()
     }
 

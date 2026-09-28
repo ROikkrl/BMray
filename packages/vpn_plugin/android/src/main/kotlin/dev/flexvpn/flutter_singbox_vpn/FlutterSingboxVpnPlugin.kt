@@ -10,6 +10,9 @@ import android.os.Looper
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.content.pm.ApplicationInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import java.io.ByteArrayOutputStream
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -151,6 +154,39 @@ class FlutterSingboxVpnPlugin :
                     .sortedBy { it["label"].toString().lowercase() }
                     .toList()
                 result.success(apps)
+            }
+            "appIcon" -> {
+                val packageName = call.argument<String>("packageName")
+                if (packageName.isNullOrBlank()) {
+                    result.success(null)
+                } else {
+                    try {
+                        val icon = context.packageManager.getApplicationIcon(packageName)
+                        val pixels = (48 * context.resources.displayMetrics.density)
+                            .toInt().coerceIn(48, 144)
+                        val image = Bitmap.createBitmap(pixels, pixels, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(image)
+                        icon.setBounds(0, 0, pixels, pixels)
+                        icon.draw(canvas)
+                        val bytes = ByteArrayOutputStream()
+                        image.compress(Bitmap.CompressFormat.PNG, 90, bytes)
+                        image.recycle()
+                        result.success(bytes.toByteArray())
+                    } catch (_: Exception) {
+                        result.success(null)
+                    }
+                }
+            }
+            "setWidgetTheme" -> {
+                val colors = call.arguments as? Map<*, *>
+                BMrayWidgetProvider.setTheme(context,
+                    (colors?.get("background") as? Number)?.toInt(),
+                    (colors?.get("foreground") as? Number)?.toInt(),
+                    (colors?.get("accent") as? Number)?.toInt(),
+                    (colors?.get("buttonText") as? Number)?.toInt(),
+                    (colors?.get("subtitle") as? Number)?.toInt(),
+                    (colors?.get("icon") as? Number)?.toInt())
+                result.success(null)
             }
             "getPerAppSettings" -> {
                 val prefs = context.getSharedPreferences("bmray-vpn", Context.MODE_PRIVATE)

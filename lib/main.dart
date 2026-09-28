@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -94,6 +95,8 @@ class _HomePageState extends State<HomePage> {
   late Future<String> _logs = _vpn.readLogs();
   final Map<String, int?> _latencies = {};
   final Map<String, String> _pingErrors = {};
+  final Set<String> _pingPending = {};
+  final Map<String, Future<Uint8List?>> _appIcons = {};
   String? _error;
   String _t(String ru, String en) => appearance.text(ru, en);
   String _perAppMode = 'off';
@@ -506,7 +509,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh(Subscription item) async {
     if (_pingBusy) {
       ++_pingEpoch;
-      setState(() => _error = null);
+      setState(() { _error = null; _pingPending.clear(); });
     }
     await _perform(() async {
       try {
@@ -861,6 +864,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _pingBusy = true;
       _error = null;
+      _pingPending.addAll(indices.map((index) => _delayKey(item, index)));
       for (final index in indices) {
         _latencies.remove(_delayKey(item, index));
         _pingErrors.remove(_delayKey(item, index));
@@ -887,7 +891,9 @@ class _HomePageState extends State<HomePage> {
         if (!mounted || epoch != _pingEpoch || method != _pingMethod) break;
         setState(() {
           for (var j = 0; j < batch.length; j++) {
-            _latencies[_delayKey(item, batch[j])] = values[j].delay;
+            final key = _delayKey(item, batch[j]);
+            _pingPending.remove(key);
+            _latencies[key] = values[j].delay;
             if (values[j].reason != null) {
               _pingErrors[_delayKey(item, batch[j])] = values[j].reason!;
             }
@@ -898,7 +904,11 @@ class _HomePageState extends State<HomePage> {
       if (mounted && epoch == _pingEpoch) setState(() => _error = error is FormatException
           ? error.message : 'Проверка серверов не удалась.');
     } finally {
-      if (mounted) setState(() => _pingBusy = false);
+      if (mounted && epoch == _pingEpoch) setState(() {
+        _pingBusy = false;
+        _pingPending.clear();
+      });
+      if (mounted && epoch != _pingEpoch) setState(() => _pingBusy = false);
     }
   }
 
@@ -1584,6 +1594,15 @@ class _HomePageState extends State<HomePage> {
           'App list is unavailable.')),
       for (final app in shown) CheckboxListTile(
         dense: true,
+        secondary: FutureBuilder<Uint8List?>(
+          future: _appIcons.putIfAbsent(app['packageName'].toString(),
+              () => _vpn.appIcon(app['packageName'].toString())),
+          builder: (context, snapshot) => SizedBox(width: 40, height: 40,
+            child: snapshot.data == null ? const Icon(Icons.apps_rounded) :
+              ClipRRect(borderRadius: BorderRadius.circular(9),
+                child: Image.memory(snapshot.data!, width: 40, height: 40,
+                  fit: BoxFit.contain, gaplessPlayback: true))),
+        ),
         title: Text(app['label']?.toString() ?? ''),
         subtitle: Text(app['packageName']?.toString() ?? ''),
         value: _perAppPackages.contains(app['packageName']),
@@ -1891,6 +1910,7 @@ class _HomePageState extends State<HomePage> {
     final key = _delayKey(item, index);
     final measured = _latencies.containsKey(key);
     final delay = _latencies[key];
+    final pingPending = _pingPending.contains(key);
     return Card(
       color: selected ? appearance.color('selectedServerRowColor') :
           appearance.color('serverRowBackgroundColor'),
@@ -1933,6 +1953,11 @@ class _HomePageState extends State<HomePage> {
               maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
+            if (pingPending) Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: SizedBox(width: 17, height: 17,
+                child: CircularProgressIndicator(strokeWidth: 2,
+                  color: appearance.color('settingsControlsTintColor')))),
             IconButton(
               tooltip: _t('Просмотреть конфигурацию', 'View config'),
               onPressed: () => _showNodeJson(item, index),

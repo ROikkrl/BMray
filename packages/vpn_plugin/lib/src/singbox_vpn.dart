@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -80,6 +81,18 @@ class SingboxVpn {
     final apps = await _methods.invokeListMethod<dynamic>('listApps') ?? [];
     return apps.whereType<Map>().map((item) =>
         Map<String, dynamic>.from(item)).toList();
+  }
+
+  /// Loads the installed app's icon on demand for the Per-app proxy list.
+  Future<Uint8List?> appIcon(String packageName) async {
+    try {
+      return await _methods.invokeMethod<Uint8List>('appIcon',
+          {'packageName': packageName});
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
   }
 
   Future<({String mode, List<String> packages})> perAppSettings() async {

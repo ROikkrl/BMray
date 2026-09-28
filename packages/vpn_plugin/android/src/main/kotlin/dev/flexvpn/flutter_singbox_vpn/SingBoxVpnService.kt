@@ -73,6 +73,7 @@ class SingBoxVpnService : VpnService() {
         stateMessage = message
         statusListener?.invoke(value, message)
         BMrayQuickTileService.refresh(this)
+        BMrayWidgetProvider.refresh(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
