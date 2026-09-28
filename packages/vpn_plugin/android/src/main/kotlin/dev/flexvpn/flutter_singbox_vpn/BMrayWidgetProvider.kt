@@ -8,14 +8,24 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.widget.RemoteViews
+import java.util.UUID
 
 /** Home-screen VPN toggle, updated by both theme changes and native VPN state. */
 class BMrayWidgetProvider : AppWidgetProvider() {
     companion object {
         private const val ACTION_TOGGLE = "com.bolvankamax.bmray.action.WIDGET_TOGGLE"
         private const val PREFS = "bmray-widget-colors"
+
+        private fun clickToken(context: Context): String {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            prefs.getString("click_token", null)?.let { return it }
+            val token = UUID.randomUUID().toString()
+            prefs.edit().putString("click_token", token).commit()
+            return token
+        }
 
         fun setTheme(context: Context, background: Int?, foreground: Int?,
             accent: Int?, buttonText: Int?, subtitle: Int?, icon: Int?) {
@@ -47,6 +57,7 @@ class BMrayWidgetProvider : AppWidgetProvider() {
             val icon = prefs.getInt("icon", Color.WHITE)
             val connected = SingBoxVpnService.state == "connected"
             val busy = SingBoxVpnService.state in listOf("connecting", "disconnecting", "reasserting")
+            val token = clickToken(context)
             val label = when {
                 busy -> context.getString(R.string.bmray_widget_connecting)
                 connected -> context.getString(R.string.bmray_tile_connected)
@@ -74,6 +85,7 @@ class BMrayWidgetProvider : AppWidgetProvider() {
                 val click = PendingIntent.getBroadcast(context, id,
                     Intent(context, BMrayWidgetProvider::class.java).apply {
                         action = ACTION_TOGGLE
+                        data = Uri.parse("bmray-widget://toggle/$id/$token")
                         putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
                     }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 views.setOnClickPendingIntent(R.id.widget_root, click)
@@ -89,6 +101,7 @@ class BMrayWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action != ACTION_TOGGLE) return
+        if (intent.data?.lastPathSegment != clickToken(context)) return
         QuickVpnToggle.toggle(context) {
             context.startActivity(Intent(BMrayQuickTileService.ACTION_CONNECT_IN_APP).apply {
                 setClassName(context.packageName, "com.bolvankamax.bmray.MainActivity")
