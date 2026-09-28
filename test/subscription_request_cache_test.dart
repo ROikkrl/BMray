@@ -40,12 +40,14 @@ void main() {
     try {
       final cache = SubscriptionRequestCache(directory: () async => dir);
       await cache.setLimitMb(5);
-      for (var i = 0; i < 70; i++) {
+      // Keep each line below read()'s 256 KB window and reduce fsync calls
+      // while still crossing the 5 MB limit.
+      for (var i = 0; i < 21; i++) {
         await cache.append({'event': 'synthetic', 'index': i,
-          'data': 'a' * 80000});
+          'data': 'a' * 250000});
       }
       expect(await cache.sizeBytes(), lessThanOrEqualTo(5 * 1024 * 1024));
-      expect(await cache.read(), contains('"index":69'));
+      expect(await cache.read(), contains('"index":20'));
       await cache.clear();
       expect(await cache.sizeBytes(), 0);
     } finally {
