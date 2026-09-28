@@ -120,6 +120,16 @@ class FlutterSingboxVpnPlugin :
                 stopVpn()
                 result.success(null)
             }
+            "setQuickTileProfile" -> {
+                try {
+                    QuickTileProfile.save(context,
+                        call.argument<String>("config"), call.argument<String>("xrayConfig"))
+                    BMrayQuickTileService.refresh(context)
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("quick_tile_profile", "Не удалось сохранить профиль плитки VPN", null)
+                }
+            }
             "otherVpnActive" -> {
                 val cm = context.getSystemService(ConnectivityManager::class.java)
                 val activeVpn = cm.activeNetwork?.let { network ->

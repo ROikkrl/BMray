@@ -48,6 +48,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _vpn = SingboxVpn();
+  static const _quickTile = MethodChannel('bmray/quick_tile');
   final _store = SubscriptionStore();
   static const _settingsStorage = FlutterSecureStorage();
   static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
@@ -73,6 +74,9 @@ class _HomePageState extends State<HomePage> {
   int _nodeIndex = 0;
   VpnStatus _status = const VpnStatus.disconnected();
   bool _busy = false;
+  bool _initialized = false;
+  bool _tileConnectionPending = false;
+  bool _handlingTileConnection = false;
   bool _pingBusy = false;
   int _pingEpoch = 0;
   PingMethod _pingMethod = PingMethod.proxyGet;
@@ -115,6 +119,14 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    if (Platform.isAndroid) {
+      _quickTile.setMethodCallHandler((call) async {
+        if (call.method == 'connect') {
+          _tileConnectionPending = true;
+          if (_initialized) await _connectFromQuickTile();
+        }
+      });
+    }
     _statusSubscription = _vpn.statusStream().listen((status) {
       if (mounted)
         setState(() {
@@ -198,6 +210,9 @@ class _HomePageState extends State<HomePage> {
             _nodeIndex = match < 0 ? _firstUsableIndex(chosen) : match;
           }
         });
+      _initialized = true;
+      _rememberSelection();
+      if (Platform.isAndroid) await _connectFromQuickTile();
       if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
       if (mounted)
@@ -207,6 +222,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    if (Platform.isAndroid) _quickTile.setMethodCallHandler(null);
     _statusSubscription?.cancel();
     _uptimeTimer?.cancel();
     _subscriptionTimer?.cancel();
@@ -286,13 +302,52 @@ class _HomePageState extends State<HomePage> {
 
   void _rememberSelection() {
     final selected = _selected;
-    if (selected == null || selected.nodes.isEmpty) return;
-    final id = selected.id;
-    final node = _nodeSelectionKey(selected.nodes[_nodeIndex.clamp(0, selected.nodes.length - 1)]);
+    final node = selected != null && selected.nodes.isNotEmpty
+        ? selected.nodes[_nodeIndex.clamp(0, selected.nodes.length - 1)] : null;
+    final id = node == null ? null : selected!.id;
+    final nodeKey = node == null ? null : _nodeSelectionKey(node);
     _selectionWrite = _selectionWrite.then((_) async {
-      await _settingsStorage.write(key: _selectedSubscriptionKey, value: id);
-      await _settingsStorage.write(key: _selectedNodeKey, value: node);
+      try {
+        if (id == null || nodeKey == null) {
+          await _settingsStorage.delete(key: _selectedSubscriptionKey);
+          await _settingsStorage.delete(key: _selectedNodeKey);
+        } else {
+          await _settingsStorage.write(key: _selectedSubscriptionKey, value: id);
+          await _settingsStorage.write(key: _selectedNodeKey, value: nodeKey);
+        }
+      } catch (_) {
+        // The tile can still use the current selection for this session.
+      }
+      if (!Platform.isAndroid) return;
+      try {
+        final profile = node == null ? null : _connectionConfig(selected!, node);
+        await _vpn.setQuickTileProfile(profile?.configJson,
+            xrayConfig: profile?.xrayJson);
+      } catch (_) {
+        // Never leave a previous server armed when the selection cannot start.
+        await _vpn.setQuickTileProfile(null);
+      }
     }).catchError((Object _) {});
+  }
+
+  Future<void> _connectFromQuickTile() async {
+    if (!_initialized || _handlingTileConnection) return;
+    _handlingTileConnection = true;
+    try {
+      final pending = await _quickTile.invokeMethod<bool>('consumeConnect') ?? false;
+      if (!pending && !_tileConnectionPending) return;
+      _tileConnectionPending = false;
+      if (!mounted || _busy || _pingBusy) return;
+      final status = await _vpn.currentStatus();
+      if (!mounted || status.state.isActive || status.state.isBusy) return;
+      setState(() => _setStatus(status));
+      await _selectionWrite;
+      if (mounted) await _toggle();
+    } catch (_) {
+      // The regular connect button remains available if a tile intent fails.
+    } finally {
+      _handlingTileConnection = false;
+    }
   }
 
   Future<void> _add() async {
@@ -388,6 +443,15 @@ class _HomePageState extends State<HomePage> {
       final item = _selected;
       if (item == null || item.nodes.isEmpty) return;
       final node = item.nodes[_nodeIndex.clamp(0, item.nodes.length - 1)];
+      final profile = _connectionConfig(item, node);
+      final validationError = await _vpn.validateConfig(profile.configJson);
+      if (validationError != null) throw FormatException(validationError);
+      await _vpn.start(profile.configJson, name: 'BMray',
+          xrayConfig: profile.xrayJson);
+  }
+
+  ({String configJson, String? xrayJson}) _connectionConfig(
+      Subscription item, Map<String, dynamic> node) {
       if (node['_unsupported_reason'] != null) {
         throw FormatException(node['_unsupported_reason'].toString());
       }
@@ -403,11 +467,8 @@ class _HomePageState extends State<HomePage> {
       if (item.directRules.isNotEmpty && node['type'] != 'auto') {
         (config['route']['rules'] as List).addAll(item.directRules);
       }
-      final configJson = jsonEncode(config);
-      final validationError = await _vpn.validateConfig(configJson);
-      if (validationError != null) throw FormatException(validationError);
-      await _vpn.start(configJson, name: 'BMray',
-          xrayConfig: bridge == null ? null : jsonEncode(bridge.xray));
+      return (configJson: jsonEncode(config),
+          xrayJson: bridge == null ? null : jsonEncode(bridge.xray));
   }
 
   Future<void> _waitForDisconnect() async {
@@ -1140,6 +1201,15 @@ class _HomePageState extends State<HomePage> {
         _t('Логи ядра и VPN', 'Core and VPN logs'),
         Icons.description_outlined, 4),
     _settingsHeading(_t('Настройки туннеля', 'Tunnel settings')),
+    if (Platform.isAndroid) ListTile(
+      leading: const Icon(Icons.power_settings_new_rounded),
+      title: Text(_t('Кнопка VPN в быстрых настройках',
+          'VPN tile in Quick Settings')),
+      subtitle: Text(_t('Включайте выбранный сервер из панели телефона',
+          'Toggle the selected server from the phone panel')),
+      trailing: const Icon(Icons.add_circle_outline_rounded),
+      onTap: _addQuickTile,
+    ),
     _settingsEntry(_t('Прокси для выбранных приложений', 'Per-app proxy'),
         _t('Все приложения, только выбранные или обход',
           'All apps, selected apps or bypass'), Icons.apps_rounded, 8),
@@ -1158,6 +1228,21 @@ class _HomePageState extends State<HomePage> {
         _t('Версии и сведения о системе', 'Versions and system details'),
         Icons.info_outline_rounded, 3),
   ]);
+
+  Future<void> _addQuickTile() async {
+    bool added = false;
+    try {
+      added = await _quickTile.invokeMethod<bool>('requestAdd') ?? false;
+    } catch (_) {
+      // The user can still add the tile through Android's Quick Settings editor.
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(added
+        ? _t('Кнопка BMray добавлена в быстрые настройки.',
+            'BMray tile added to Quick Settings.')
+        : _t('Откройте панель быстрых настроек, нажмите «Изменить» и добавьте BMray VPN.',
+            'Open Quick Settings, tap Edit and add BMray VPN.'))));
+  }
 
   Future<void> _setCacheLimit(int megabytes) async {
     try {
