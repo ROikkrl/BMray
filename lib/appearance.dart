@@ -87,6 +87,7 @@ class AppearanceSettings extends ChangeNotifier {
 
   String language = 'auto';
   String themeId = 'dark';
+  String launcherIcon = 'classic';
   final Map<String, Map<String, dynamic>> customThemes = {};
 
   Map<String, dynamic> get palette =>
@@ -154,6 +155,14 @@ class AppearanceSettings extends ChangeNotifier {
           }
         }
       }
+      try {
+        launcherIcon = await _widgetChannel.invokeMethod<String>(
+            'getLauncherIcon') ?? 'classic';
+      } on MissingPluginException {
+        // Alternate launcher icons are available on Android.
+      } on PlatformException {
+        // Preserve the classic icon if the launcher is unavailable.
+      }
     } catch (_) {
       // A corrupt appearance preference does not prevent the app from opening.
     }
@@ -183,6 +192,16 @@ class AppearanceSettings extends ChangeNotifier {
     language = value;
     notifyListeners();
     await _storage.write(key: _languageKey, value: value);
+  }
+
+  Future<void> setLauncherIcon(String variant) async {
+    if (!const {'classic', 'monochrome', 'purple', 'cyan'}.contains(variant)) {
+      throw const FormatException('Иконка не найдена.');
+    }
+    await _widgetChannel.invokeMethod<void>('setLauncherIcon',
+        {'variant': variant});
+    launcherIcon = variant;
+    notifyListeners();
   }
 
   Future<void> setTheme(String value) async {

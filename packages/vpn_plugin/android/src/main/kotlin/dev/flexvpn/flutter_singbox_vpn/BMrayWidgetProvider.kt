@@ -10,6 +10,9 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.util.SizeF
+import android.view.View
 import android.widget.RemoteViews
 import java.util.UUID
 
@@ -58,37 +61,83 @@ class BMrayWidgetProvider : AppWidgetProvider() {
             val connected = SingBoxVpnService.state == "connected"
             val busy = SingBoxVpnService.state in listOf("connecting", "disconnecting", "reasserting")
             val token = clickToken(context)
+            val server = QuickTileProfile.load(context)?.name.orEmpty()
+            val elapsed = SingBoxVpnService.connectedAtMillis?.let {
+                ((System.currentTimeMillis() - it) / 1000).coerceAtLeast(0)
+            } ?: 0
+            val timer = "%02d:%02d:%02d".format(elapsed / 3600,
+                elapsed % 3600 / 60, elapsed % 60)
             val label = when {
                 busy -> context.getString(R.string.bmray_widget_connecting)
                 connected -> context.getString(R.string.bmray_tile_connected)
                 else -> context.getString(R.string.bmray_tile_disconnected)
             }
             for (id in ids) {
-                val views = RemoteViews(context.packageName, R.layout.bmray_widget)
-                if (Build.VERSION.SDK_INT >= 31) {
-                    views.setColorStateList(R.id.widget_root, "setBackgroundTintList",
-                        ColorStateList.valueOf(background))
-                    views.setColorStateList(R.id.widget_action, "setBackgroundTintList",
-                        ColorStateList.valueOf(accent))
-                } else {
-                    views.setInt(R.id.widget_root, "setBackgroundColor", background)
-                    views.setInt(R.id.widget_action, "setBackgroundColor", accent)
+                fun render(layout: Int): RemoteViews {
+                    val views = RemoteViews(context.packageName, layout)
+                    val compact = layout == R.layout.bmray_widget_compact
+                    val tall = layout == R.layout.bmray_widget_tall
+                    val rootColor = if (compact) accent else background
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        views.setColorStateList(R.id.widget_root, "setBackgroundTintList",
+                            ColorStateList.valueOf(rootColor))
+                        if (!compact) views.setColorStateList(R.id.widget_action,
+                            "setBackgroundTintList", ColorStateList.valueOf(accent))
+                    } else {
+                        views.setInt(R.id.widget_root, "setBackgroundColor", rootColor)
+                        if (!compact) views.setInt(R.id.widget_action,
+                            "setBackgroundColor", accent)
+                    }
+                    if (compact) {
+                        views.setInt(R.id.widget_power, "setColorFilter", buttonText)
+                        views.setContentDescription(R.id.widget_root, context.getString(
+                            if (connected) R.string.bmray_widget_disconnect
+                            else R.string.bmray_widget_connect))
+                    } else {
+                        views.setTextColor(R.id.widget_title, foreground)
+                        views.setTextColor(R.id.widget_status, subtitle)
+                        views.setTextColor(R.id.widget_action, buttonText)
+                        views.setTextViewText(R.id.widget_status, label)
+                        views.setTextViewText(R.id.widget_action, context.getString(
+                            if (tall && connected) R.string.bmray_widget_disconnect
+                            else if (tall) R.string.bmray_widget_connect
+                            else if (connected) R.string.bmray_widget_off
+                            else R.string.bmray_widget_on))
+                        views.setInt(R.id.widget_logo, "setColorFilter", icon)
+                        views.setTextColor(R.id.widget_timer, foreground)
+                        views.setTextViewText(R.id.widget_timer, timer)
+                        views.setViewVisibility(R.id.widget_timer,
+                            if (connected) View.VISIBLE else View.GONE)
+                        if (tall) {
+                            views.setTextColor(R.id.widget_server, foreground)
+                            views.setTextViewText(R.id.widget_server, server)
+                            views.setViewVisibility(R.id.widget_server,
+                                if (connected && server.isNotBlank()) View.VISIBLE else View.GONE)
+                        }
+                    }
+                    val click = PendingIntent.getBroadcast(context, id,
+                        Intent(context, BMrayWidgetProvider::class.java).apply {
+                            action = ACTION_TOGGLE
+                            data = Uri.parse("bmray-widget://toggle/$id/$token")
+                            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                        }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                    views.setOnClickPendingIntent(R.id.widget_root, click)
+                    return views
                 }
-                views.setTextColor(R.id.widget_title, foreground)
-                views.setTextColor(R.id.widget_status, subtitle)
-                views.setTextColor(R.id.widget_action, buttonText)
-                views.setTextViewText(R.id.widget_status, label)
-                views.setTextViewText(R.id.widget_action, context.getString(
-                    if (connected) R.string.bmray_widget_disconnect
-                    else R.string.bmray_widget_connect))
-                views.setInt(R.id.widget_logo, "setColorFilter", icon)
-                val click = PendingIntent.getBroadcast(context, id,
-                    Intent(context, BMrayWidgetProvider::class.java).apply {
-                        action = ACTION_TOGGLE
-                        data = Uri.parse("bmray-widget://toggle/$id/$token")
-                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                    }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                views.setOnClickPendingIntent(R.id.widget_root, click)
+                val views = if (Build.VERSION.SDK_INT >= 31) {
+                    RemoteViews(mapOf(
+                        SizeF(40f, 40f) to render(R.layout.bmray_widget_compact),
+                        SizeF(110f, 40f) to render(R.layout.bmray_widget),
+                        SizeF(110f, 105f) to render(R.layout.bmray_widget_tall),
+                    ))
+                } else {
+                    val options = manager.getAppWidgetOptions(id)
+                    val width = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 110)
+                    val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 40)
+                    render(if (width < 100) R.layout.bmray_widget_compact
+                        else if (height >= 100) R.layout.bmray_widget_tall
+                        else R.layout.bmray_widget)
+                }
                 manager.updateAppWidget(id, views)
             }
         }
@@ -96,6 +145,11 @@ class BMrayWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         update(context, manager, ids)
+    }
+
+    override fun onAppWidgetOptionsChanged(context: Context,
+        manager: AppWidgetManager, id: Int, newOptions: Bundle) {
+        update(context, manager, intArrayOf(id))
     }
 
     override fun onReceive(context: Context, intent: Intent) {

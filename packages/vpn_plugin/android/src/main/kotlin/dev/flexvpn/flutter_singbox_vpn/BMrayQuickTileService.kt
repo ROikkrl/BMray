@@ -4,15 +4,22 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import java.lang.ref.WeakReference
 
 /** A native toggle: it works when Flutter is not running after VPN consent. */
 class BMrayQuickTileService : TileService() {
     companion object {
         const val ACTION_CONNECT_IN_APP = "com.bolvankamax.bmray.action.TILE_CONNECT"
+        private var listeningTile: WeakReference<BMrayQuickTileService>? = null
 
         fun refresh(context: android.content.Context) {
+            Handler(Looper.getMainLooper()).post {
+                listeningTile?.get()?.updateState()
+            }
             try {
                 TileService.requestListeningState(context,
                     ComponentName(context, BMrayQuickTileService::class.java))
@@ -24,7 +31,13 @@ class BMrayQuickTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+        listeningTile = WeakReference(this)
         updateState()
+    }
+
+    override fun onStopListening() {
+        listeningTile = null
+        super.onStopListening()
     }
 
     override fun onClick() {
