@@ -1,4 +1,7 @@
 <resources>
     <string name="bmray_tile_connected">Подключено</string>
     <string name="bmray_tile_disconnected">Не подключено</string>
+    <string name="bmray_widget_connect">Подключить</string>
+    <string name="bmray_widget_disconnect">Отключить</string>
+    <string name="bmray_widget_connecting">Подключение…</string>
 </resources>

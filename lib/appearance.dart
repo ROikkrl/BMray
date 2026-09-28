@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const builtInThemes = <String, Map<String, dynamic>>{
@@ -46,25 +47,40 @@ const builtInThemes = <String, Map<String, dynamic>>{
     'settingsControlsTintColor': '#FFFFFFFF',
     'buttonTimerColor': '#FFFFFFFF',
   },
-  'Electric Blue': {
-    'backgroundGradientRotationAngle': 55,
-    'backgroundColors': ['#00101CFF', '#001D33FF', '#00345BFF'],
-    'serverRowBackgroundColor': '#06253AFF',
-    'selectedServerRowColor': '#064D78FF',
-    'subsHeaderColor': '#063C61FF',
-    'buttonColor': '#23B7FFFF',
-    'buttonTextColor': '#00111DFF',
-    'powerIconColor': '#00375AFF',
-    'serverRowTitleTextColor': '#F0FAFFFF',
-    'serverRowSubTitleTextColor': '#9AC6DFFF',
-    'topBarButtonsColor': '#4CC5FFFF',
-    'settingsControlsTintColor': '#23B7FFFF',
-    'buttonTimerColor': '#FFFFFFFF',
+  'Cyber Lime': {
+    'backgroundGradientRotationAngle': 240,
+    'backgroundGradientColorIntensity': 1,
+    'backgroundColors': ['#030500FF', '#101600FF', '#222D00FF'],
+    'serverRowBackgroundColor': '#101500FF',
+    'selectedServerRowColor': '#2D3A00FF',
+    'subsHeaderColor': '#212A00FF',
+    'buttonColor': '#C8FF00FF',
+    'buttonTextColor': '#111700FF',
+    'powerIconColor': '#273200FF',
+    'serverRowTitleTextColor': '#FAFFE8FF',
+    'serverRowSubTitleTextColor': '#B0BC85FF',
+    'topBarButtonsColor': '#C8FF00FF',
+    'supportIconColor': '#C8FF00FF',
+    'profileWebPageIconColor': '#C8FF00FF',
+    'subHeaderButtonColor': '#C8FF00FF',
+    'settingsControlsTintColor': '#C8FF00FF',
+    'subscriptionInfoBackgroundColor': '#121700FF',
+    'subscriptionTrafficBackgroundColor': '#2B3600FF',
+    'subscriptionInfoTextColor': '#FAFFE8FF',
+    'disclosureHeaderTextColor': '#FAFFE8FF',
+    'disclosureSubHeaderTextColor': '#B0BC85FF',
+    'serverRowChevronColor': '#C8FF00FF',
+    'additionalOptionsButtonColor': '#C8FF00FF',
+    'buttonTimerColor': '#FAFFE8FF',
+    'elipseColors': ['#C8FF00FF', '#77FF00FF', '#EDFF73FF'],
+    'backgroundImageType': 'light',
+    'buttonImageType': 'light',
   },
 };
 
 class AppearanceSettings extends ChangeNotifier {
   static const _storage = FlutterSecureStorage();
+  static const _widgetChannel = MethodChannel('flutter_singbox_vpn/methods');
   static const _languageKey = 'bmray.appearance.language';
   static const _themeKey = 'bmray.appearance.theme';
   static const _customKey = 'bmray.appearance.customThemes';
@@ -122,6 +138,10 @@ class AppearanceSettings extends ChangeNotifier {
     try {
       language = await _storage.read(key: _languageKey) ?? 'auto';
       themeId = await _storage.read(key: _themeKey) ?? 'dark';
+      if (themeId == 'Electric Blue') {
+        themeId = 'Cyber Lime';
+        await _storage.write(key: _themeKey, value: themeId);
+      }
       final raw = await _storage.read(key: _customKey);
       if (raw != null) {
         final stored = jsonDecode(raw);
@@ -138,6 +158,24 @@ class AppearanceSettings extends ChangeNotifier {
       // A corrupt appearance preference does not prevent the app from opening.
     }
     notifyListeners();
+    await _syncWidgetTheme();
+  }
+
+  Future<void> _syncWidgetTheme() async {
+    try {
+      await _widgetChannel.invokeMethod<void>('setWidgetTheme', {
+        'background': backgroundColors.first.toARGB32(),
+        'foreground': color('serverRowTitleTextColor').toARGB32(),
+        'subtitle': color('serverRowSubTitleTextColor').toARGB32(),
+        'accent': color('buttonColor').toARGB32(),
+        'icon': color('topBarButtonsColor').toARGB32(),
+        'buttonText': color('buttonTextColor').toARGB32(),
+      });
+    } on MissingPluginException {
+      // Home-screen widgets are Android-only.
+    } on PlatformException {
+      // Appearance settings still work when widget updates are unavailable.
+    }
   }
 
   Future<void> setLanguage(String value) async {
@@ -154,6 +192,7 @@ class AppearanceSettings extends ChangeNotifier {
     themeId = value;
     notifyListeners();
     await _storage.write(key: _themeKey, value: value);
+    await _syncWidgetTheme();
   }
 
   Future<void> saveCustom(String name, String json) async {
