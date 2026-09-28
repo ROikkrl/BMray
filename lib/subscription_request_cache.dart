@@ -125,6 +125,12 @@ Map<String, dynamic> subscriptionRequestTarget(Uri uri) => {
 Map<String, dynamic> subscriptionBodySummary(String body) {
   var content = body.trim();
   var encoded = false;
+  if (looksLikeHtmlSubscriptionResponse(content)) {
+    return {
+      'format': 'html',
+      'pageKind': _htmlPageKind(content),
+    };
+  }
   if (!content.startsWith('{') && !content.startsWith('[') &&
       !content.contains('://')) {
     try {
@@ -175,4 +181,27 @@ Map<String, dynamic> subscriptionBodySummary(String body) {
     'linkSchemes': schemes,
     'loopbackLinks': loopback,
   };
+}
+
+bool looksLikeHtmlSubscriptionResponse(String body) {
+  final beginning = body.trimLeft();
+  if (beginning.startsWith('{') || beginning.startsWith('[')) return false;
+  return RegExp(r'^(?:<!doctype\s+html\b|<html\b|<head\b)',
+          caseSensitive: false)
+      .hasMatch(beginning) ||
+      RegExp(r'<html(?:\s|>)', caseSensitive: false)
+          .hasMatch(beginning.substring(0, beginning.length < 512 ? beginning.length : 512));
+}
+
+String _htmlPageKind(String body) {
+  final beginning = body.substring(0, body.length < 16384 ? body.length : 16384).toLowerCase();
+  if (beginning.contains('cf-chl-') || beginning.contains('challenge-platform') ||
+      beginning.contains('checking your browser')) return 'challenge';
+  if (RegExp(r'''<meta[^>]+http-equiv\s*=\s*["']?refresh''',
+      caseSensitive: false).hasMatch(beginning)) return 'redirect';
+  if (RegExp(r'<form\b', caseSensitive: false).hasMatch(beginning) &&
+      (beginning.contains('password') || beginning.contains('login'))) {
+    return 'login';
+  }
+  return 'web-page';
 }

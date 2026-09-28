@@ -357,24 +357,27 @@ class SubscriptionStore {
       String? userInfo, String? updateInterval, String? originalBody})> _downloadPreferXrayJson(
           Uri initial) async {
     final original = await _download(initial);
-    if (!needsXrayJsonRetry(original.body)) return (
+    final html = looksLikeHtmlSubscriptionResponse(original.body);
+    final loopback = needsXrayJsonRetry(original.body);
+    if (!loopback && !html) return (
       id: original.id, body: original.body, title: original.title,
       announce: original.announce, userInfo: original.userInfo,
       updateInterval: original.updateInterval, originalBody: null);
+    final reason = html ? 'html-response' : 'base64-loopback-template';
     final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
     if (subscriptionIdentity.isHappUserAgent) {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
-        'reason': 'base64-loopback-template', 'result': 'custom-happ-agent-kept'});
+        'reason': reason, 'result': 'custom-happ-agent-kept'});
       return (id: original.id, body: original.body, title: original.title,
         announce: original.announce, userInfo: original.userInfo,
         updateInterval: original.updateInterval, originalBody: null);
     }
     await requestLog.append({'event': 'compatibility', 'id': original.id,
-      'reason': 'base64-loopback-template', 'action': 'retry-xray-json'});
+      'reason': reason, 'action': 'retry-xray-json'});
     try {
       final retried = await _download(initial, requestXrayJson: true);
       final json = retried.body.trimLeft();
-      final usable = (json.startsWith('{') || json.startsWith('[')) &&
+      final usable = (html || json.startsWith('{') || json.startsWith('[')) &&
           _parse(retried.body).nodes.isNotEmpty;
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'retryId': retried.id, 'result': usable ? 'xray-json' : 'original-kept',
@@ -383,7 +386,7 @@ class SubscriptionStore {
       return (id: selected.id, body: selected.body, title: selected.title,
         announce: selected.announce, userInfo: selected.userInfo,
         updateInterval: selected.updateInterval,
-        originalBody: usable ? original.body : null);
+        originalBody: usable && loopback ? original.body : null);
     } catch (error) {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'result': 'original-kept', 'retryError': error.runtimeType.toString()});
@@ -399,9 +402,11 @@ class SubscriptionStore {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+    var stage = 'connect';
     try {
       var uri = initial;
       for (var redirect = 0; redirect < 4; redirect++) {
+        stage = 'connect';
         if (uri.scheme != 'https' || uri.userInfo.isNotEmpty) {
           throw const FormatException(
             'Переадресация на небезопасный адрес подписки.',
@@ -417,6 +422,8 @@ class SubscriptionStore {
         if (requestXrayJson) {
           headers[HttpHeaders.userAgentHeader] =
               subscriptionIdentity.xrayJsonUserAgent;
+          request.headers.set(HttpHeaders.acceptHeader,
+              'application/json, text/plain, */*');
         }
         for (final entry in headers.entries) {
           request.headers.set(entry.key, entry.value);
@@ -440,6 +447,7 @@ class SubscriptionStore {
           'hwidSent': headers.containsKey('x-hwid'),
           'cookieSent': headers.containsKey(HttpHeaders.cookieHeader),
         });
+        stage = 'response-headers';
         final response = await request.close().timeout(
           const Duration(seconds: 20),
         );
@@ -480,6 +488,7 @@ class SubscriptionStore {
           );
         }
         final bytes = <int>[];
+        stage = 'response-body';
         await for (final chunk in response.timeout(
           const Duration(seconds: 20),
         )) {
@@ -504,7 +513,7 @@ class SubscriptionStore {
     } catch (error) {
       await requestLog.append({'event': 'error', 'id': requestId,
         'target': subscriptionRequestTarget(initial),
-        'errorType': error.runtimeType.toString()});
+        'errorType': error.runtimeType.toString(), 'stage': stage});
       rethrow;
     } finally {
       client.close(force: true);
