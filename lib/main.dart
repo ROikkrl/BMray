@@ -301,14 +301,14 @@ class _HomePageState extends State<HomePage> {
     final shouldImport = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Добавить подключение'),
+        title: Text(_t('Добавить подключение', 'Add connection')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: name,
-              decoration: const InputDecoration(
-                labelText: 'Название (необязательно)',
+              decoration: InputDecoration(
+                labelText: _t('Название (необязательно)', 'Name (optional)'),
               ),
             ),
             const SizedBox(height: 12),
@@ -317,9 +317,10 @@ class _HomePageState extends State<HomePage> {
               keyboardType: TextInputType.url,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(
-                labelText: 'Подписка или ссылка сервера',
-                hintText: 'https://…, vless://… или Xray JSON',
+              decoration: InputDecoration(
+                labelText: _t('Подписка или ссылка сервера', 'Subscription or server link'),
+                hintText: _t('https://…, vless://… или Xray JSON',
+                    'https://…, vless://… or Xray JSON'),
               ),
             ),
           ],
@@ -327,11 +328,11 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Отмена'),
+            child: Text(_t('Отмена', 'Cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Импортировать'),
+            child: Text(_t('Импортировать', 'Import')),
           ),
         ],
       ),
@@ -916,16 +917,16 @@ class _HomePageState extends State<HomePage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Удалить подписку?'),
+        title: Text(_t('Удалить подписку?', 'Delete subscription?')),
         content: Text(item.name),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
+            child: Text(_t('Отмена', 'Cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
+            child: Text(_t('Удалить', 'Delete')),
           ),
         ],
       ),
@@ -1169,9 +1170,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _cacheView() => ListView(padding: const EdgeInsets.all(16), children: [
-    const Text('Кэш', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+    Text(_t('Кэш', 'Cache'), style: const TextStyle(fontSize: 20,
+        fontWeight: FontWeight.w700)),
     const SizedBox(height: 12),
-    const Text('В кэше хранится журнал запросов подписок: время, адрес сервера '
+    Text(_t('В кэше хранится журнал запросов подписок: время, адрес сервера '
         'без секретного пути и параметров, отправленные имена заголовков, '
         'User-Agent, HTTP-статус, имена заголовков ответа и формат содержимого. '
         'Для Base64 записывается число ссылок и их протоколы; для JSON — '
@@ -1179,24 +1181,30 @@ class _HomePageState extends State<HomePage> {
         'в журнал не записываются. Исходные подписки и выбранный сервер '
         'хранятся отдельно; очистка кэша их не удалит. Android и iOS могут '
         'очистить временный кэш автоматически. Лимит относится к этому '
-        'журналу; журнал ядра и системные временные файлы в него не входят.'),
+        'журналу; журнал ядра и системные временные файлы в него не входят.',
+        'The cache stores subscription request logs: time, host without secret '
+        'path or query, header names, User-Agent, HTTP status and response '
+        'format. Links, credentials, HWID, Cookie values and response bodies '
+        'are not logged. Imported subscriptions and selected server are stored '
+        'separately. This limit does not include core logs or system cache.')),
     const SizedBox(height: 20),
-    Text('Максимальный размер: $_cacheLimitMb МБ',
+    Text(_t('Максимальный размер: $_cacheLimitMb МБ',
+        'Maximum size: $_cacheLimitMb MB'),
         style: const TextStyle(fontWeight: FontWeight.w600)),
     Slider(
       min: 5, max: 500, divisions: 99,
       value: _cacheLimitMb.toDouble(),
-      label: '$_cacheLimitMb МБ',
+      label: _t('$_cacheLimitMb МБ', '$_cacheLimitMb MB'),
       onChanged: (value) => setState(() =>
           _cacheLimitMb = (value / 5).round() * 5),
       onChangeEnd: (value) => _setCacheLimit((value / 5).round() * 5),
     ),
     FutureBuilder<int>(future: _cacheSize, builder: (context, snapshot) =>
-        Text('Занято: ${snapshot.hasData ? _formatTraffic(snapshot.data) : '…'}')),
+        Text('${_t('Занято', 'Used')}: ${snapshot.hasData ? _formatTraffic(snapshot.data) : '…'}')),
     const SizedBox(height: 12),
     OutlinedButton.icon(
       icon: const Icon(Icons.delete_outline_rounded),
-      label: const Text('Очистить журнал запросов'),
+      label: Text(_t('Очистить журнал запросов', 'Clear request log')),
       onPressed: () async {
         await _store.requestLog.clear();
         if (mounted) setState(() {
@@ -1212,16 +1220,18 @@ class _HomePageState extends State<HomePage> {
     builder: (context, snapshot) {
       final logs = snapshot.data ?? '';
       return Padding(padding: const EdgeInsets.all(16), child: Column(children: [
-        const Text('Обновите подписку, затем скопируйте журнал и отправьте его '
-            'для диагностики. Секретные значения заголовков и ссылки скрыты.'),
+        Text(_t('Обновите подписку, затем скопируйте журнал и отправьте его '
+            'для диагностики. Секретные значения заголовков и ссылки скрыты.',
+            'Refresh a subscription, then copy the log for diagnostics. '
+            'Secret header values and links are hidden.')),
         const SizedBox(height: 8),
         Row(children: [
-          const Expanded(child: Text('Последние 256 КБ журнала',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
-          IconButton(tooltip: 'Обновить',
+          Expanded(child: Text(_t('Последние 256 КБ журнала', 'Last 256 KB of logs'),
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+          IconButton(tooltip: _t('Обновить', 'Refresh'),
               onPressed: () => setState(() => _requestLogs = _store.requestLog.read()),
               icon: const Icon(Icons.refresh_rounded)),
-          IconButton(tooltip: 'Копировать для диагностики',
+          IconButton(tooltip: _t('Копировать для диагностики', 'Copy diagnostics'),
               onPressed: logs.isEmpty ? null : () =>
                   Clipboard.setData(ClipboardData(text: logs)),
               icon: const Icon(Icons.copy_rounded)),
@@ -1230,9 +1240,10 @@ class _HomePageState extends State<HomePage> {
         Expanded(child: Card(child: Padding(
           padding: const EdgeInsets.all(14),
           child: SingleChildScrollView(child: SelectableText(
-            snapshot.hasError ? 'Не удалось прочитать кэш.' :
-            snapshot.connectionState != ConnectionState.done ? 'Загрузка…' :
-            logs.isEmpty ? 'Журнал пуст. Обновите подписку и вернитесь сюда.' : logs,
+            snapshot.hasError ? _t('Не удалось прочитать кэш.', 'Unable to read cache.') :
+            snapshot.connectionState != ConnectionState.done ? _t('Загрузка…', 'Loading…') :
+            logs.isEmpty ? _t('Журнал пуст. Обновите подписку и вернитесь сюда.',
+                'Log is empty. Refresh a subscription and return here.') : logs,
           )),
         ))),
       ]));
@@ -1265,22 +1276,28 @@ class _HomePageState extends State<HomePage> {
     ]);
 
   Widget _userAgentView() => ListView(padding: const EdgeInsets.all(16), children: [
-    const Text('Идентификатор подписки', style: TextStyle(
+    Text(_t('Идентификатор подписки', 'Subscription identity'), style: const TextStyle(
       fontSize: 20, fontWeight: FontWeight.w700)),
     const SizedBox(height: 12),
-    const Text('BMray отправляет постоянный HWID в x-hwid и Cookie BMray. '
-      'Изменение HWID может занять новое место в лимите устройств панели.'),
+    Text(_t('BMray отправляет постоянный HWID в x-hwid и Cookie BMray. '
+      'Изменение HWID может занять новое место в лимите устройств панели.',
+      'BMray sends a stable HWID and BMray Cookie. Changing HWID may use '
+      'another device slot on the provider panel.')),
     const SizedBox(height: 8),
-    const Text('Для подписки Base64 с локальным адресом АвтоБС BMray '
+    Text(_t('Для подписки Base64 с локальным адресом АвтоБС BMray '
       'повторяет запрос с User-Agent «Happ/версия BMray/…»: панель может '
       'выдать готовый XRAY_JSON. В остальных запросах действует '
       'указанный ниже User-Agent. Если он уже начинается с Happ, повторного '
-      'запроса не будет.'),
+      'запроса не будет.',
+      'For Base64 subscriptions with a loopback AutoBS host, BMray retries '
+      'with a Happ-compatible User-Agent to request XRAY_JSON. A manually '
+      'configured User-Agent starting with Happ is never rewritten.')),
     const SizedBox(height: 18),
     TextField(controller: _hwidInput, autocorrect: false,
-      decoration: const InputDecoration(labelText: 'HWID',
-        helperText: '10–64 символа: латинские буквы, цифры, = или -',
-        border: OutlineInputBorder())),
+      decoration: InputDecoration(labelText: 'HWID',
+        helperText: _t('10–64 символа: латинские буквы, цифры, = или -',
+            '10–64 characters: letters, digits, = or -'),
+        border: const OutlineInputBorder())),
     const SizedBox(height: 18),
     TextField(controller: _userAgentInput, autocorrect: false,
       decoration: const InputDecoration(labelText: 'User-Agent',
@@ -1298,8 +1315,9 @@ class _HomePageState extends State<HomePage> {
       }
       _store.identity = next;
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Настройки подписки сохранены')));
-    }), child: const Text('Сохранить')),
+          SnackBar(content: Text(_t('Настройки подписки сохранены',
+              'Subscription settings saved'))));
+    }), child: Text(_t('Сохранить', 'Save'))),
   ]);
 
   Widget _pingSettingsView() {
@@ -1375,18 +1393,20 @@ class _HomePageState extends State<HomePage> {
       Card(child: Padding(padding: const EdgeInsets.all(16),
         child: Text(description))),
       const SizedBox(height: 12),
-      const Text('Выбранный способ применяется к кнопкам проверки на экране серверов.',
-        style: TextStyle(color: Color(0xFF9DAEC7))),
+      Text(_t('Выбранный способ применяется к кнопкам проверки на экране серверов.',
+          'The selected method is used by server ping buttons.'),
+        style: const TextStyle(color: Color(0xFF9DAEC7))),
       const SizedBox(height: 24),
-      const Text('Тайм-аут Proxy GET', style: TextStyle(
+      Text(_t('Тайм-аут Proxy GET', 'Proxy GET timeout'), style: const TextStyle(
         fontSize: 18, fontWeight: FontWeight.w700)),
       const SizedBox(height: 8),
-      const Text('Время ожидания одного HTTPS-запроса. При неудаче проверка пробует следующий адрес.',
-        style: TextStyle(color: Color(0xFF9DAEC7))),
+      Text(_t('Время ожидания одного HTTPS-запроса. При неудаче проверка пробует следующий адрес.',
+          'Wait time for one HTTPS request. On failure, try the next address.'),
+        style: const TextStyle(color: Color(0xFF9DAEC7))),
       const SizedBox(height: 12),
       Wrap(spacing: 8, children: [
         for (final seconds in [2, 4, 6, 10]) ChoiceChip(
-          label: Text('$seconds с'),
+          label: Text(_t('$seconds с', '$seconds s')),
           selected: _proxyTimeoutSeconds == seconds,
           onSelected: _pingBusy ? null : (_) => _setProxyTimeout(seconds),
         ),
@@ -1414,7 +1434,8 @@ class _HomePageState extends State<HomePage> {
       await _startSelected();
     }
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настройки приложений сохранены')));
+        SnackBar(content: Text(_t('Настройки приложений сохранены',
+            'App settings saved'))));
   });
 
   Widget _perAppView() {
@@ -1586,18 +1607,18 @@ class _HomePageState extends State<HomePage> {
     builder: (context, snapshot) => ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Информация', style: TextStyle(
+        Text(_t('Информация', 'Information'), style: const TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
         FutureBuilder<String>(future: _appVersion,
-          builder: (context, app) => _infoTile('Приложение',
+          builder: (context, app) => _infoTile(_t('Приложение', 'Application'),
               app.data ?? (app.hasError ? 'Недоступно' : 'Загрузка…'))),
         _infoTile('Xray', Platform.isAndroid ? '26.9.9' : 'Недоступен на iOS'),
         _infoTile('sing-box', snapshot.hasError ? 'Недоступно' :
             snapshot.data ?? 'Загрузка…'),
-        _infoTile('Платформа', Platform.operatingSystem),
-        _infoTile('Система', Platform.operatingSystemVersion),
-        _infoTile('Среда Dart', Platform.version),
+        _infoTile(_t('Платформа', 'Platform'), Platform.operatingSystem),
+        _infoTile(_t('Система', 'System'), Platform.operatingSystemVersion),
+        _infoTile(_t('Среда Dart', 'Dart runtime'), Platform.version),
       ],
     ),
   );
@@ -1618,13 +1639,13 @@ class _HomePageState extends State<HomePage> {
       return Padding(padding: const EdgeInsets.all(16),
         child: Column(children: [
           Row(children: [
-            const Expanded(child: Text('Журнал подключения',
+            Expanded(child: Text(_t('Журнал подключения', 'Connection log'),
               maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-            IconButton(tooltip: 'Обновить', onPressed: () =>
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+            IconButton(tooltip: _t('Обновить', 'Refresh'), onPressed: () =>
               setState(() => _logs = _vpn.readLogs()),
               icon: const Icon(Icons.refresh_rounded)),
-            IconButton(tooltip: 'Копировать', onPressed: logs.isEmpty ? null :
+            IconButton(tooltip: _t('Копировать', 'Copy'), onPressed: logs.isEmpty ? null :
               () => Clipboard.setData(ClipboardData(text: logs)),
               icon: const Icon(Icons.copy_rounded)),
           ]),
@@ -1632,9 +1653,12 @@ class _HomePageState extends State<HomePage> {
           Expanded(child: Card(child: Padding(
             padding: const EdgeInsets.all(14),
             child: SingleChildScrollView(child: SelectableText(
-              snapshot.hasError ? 'Не удалось прочитать журнал.' :
-              snapshot.connectionState != ConnectionState.done ? 'Загрузка…' :
-              logs.isEmpty ? 'Журнал пуст. Попробуйте подключиться и открыть сайт.' : logs,
+              snapshot.hasError ? _t('Не удалось прочитать журнал.',
+                  'Unable to read log.') :
+              snapshot.connectionState != ConnectionState.done ?
+                  _t('Загрузка…', 'Loading…') :
+              logs.isEmpty ? _t('Журнал пуст. Попробуйте подключиться и открыть сайт.',
+                  'The log is empty. Connect and try opening a website.') : logs,
             )),
           ))),
         ]),
@@ -1646,7 +1670,7 @@ class _HomePageState extends State<HomePage> {
     final expanded = _expandedSubscriptionIds.contains(item.id);
     final host = item.isRemote ? Uri.tryParse(item.url)?.host : null;
     final description = item.notice ??
-        (host != null && host.isNotEmpty ? host : 'Локальный профиль');
+        (host != null && host.isNotEmpty ? host : _t('Локальный профиль', 'Local profile'));
     final index = _subscriptions.indexOf(item);
     final lastUpdated = item.lastUpdatedAt == null ?
         _t('Не обновлялась', 'Never updated') :
@@ -1764,7 +1788,8 @@ class _HomePageState extends State<HomePage> {
 
   String _formatTraffic(int? bytes) {
     if (bytes == null) return '—';
-    const labels = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+    final labels = appearance.isEnglish ?
+        ['B', 'KB', 'MB', 'GB', 'TB'] : ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
     var size = bytes.toDouble();
     var unit = 0;
     while (size >= 1024 && unit < labels.length - 1) {
@@ -1819,7 +1844,7 @@ class _HomePageState extends State<HomePage> {
                 style: const TextStyle(fontSize: 11, color: Color(0xFFFF9C9C))),
             ])),
             const SizedBox(width: 6),
-            if (measured) Text(delay == null ? '—' : '$delay мс',
+            if (measured) Text(delay == null ? '—' : _t('$delay мс', '$delay ms'),
               maxLines: 1, softWrap: false,
               style: TextStyle(color: delay == null ? const Color(0xFFFF9C9C) : const Color(0xFF60DFC3),
                 fontSize: 12, fontWeight: FontWeight.w600)),
@@ -1861,7 +1886,7 @@ class _QrScanPageState extends State<_QrScanPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Сканировать QR')),
+    appBar: AppBar(title: Text(appearance.text('Сканировать QR', 'Scan QR'))),
     body: Stack(children: [
       MobileScanner(controller: _controller, onDetect: (capture) {
         if (_handled) return;
@@ -1874,10 +1899,11 @@ class _QrScanPageState extends State<_QrScanPage> {
           }
         }
       }),
-      const Align(alignment: Alignment.bottomCenter,
+      Align(alignment: Alignment.bottomCenter,
         child: SafeArea(child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Наведите камеру на QR-код подписки или сервера.',
+          padding: const EdgeInsets.all(24),
+          child: Text(appearance.text('Наведите камеру на QR-код подписки или сервера.',
+              'Point the camera at a subscription or server QR code.'),
             textAlign: TextAlign.center),
         ))),
     ]),
