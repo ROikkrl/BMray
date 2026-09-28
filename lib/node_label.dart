@@ -2,7 +2,24 @@
 /// Never guess REALITY from the display name: use the imported security fields.
 String nodeLabel(Map<String, dynamic> node) {
   final type = node['type']?.toString().toLowerCase() ?? '';
-  if (type == 'auto') return 'АВТОБС / XRAY / БАЛАНСИРОВКА';
+  if (type == 'auto') {
+    final origin = node['_origin_node'];
+    if (origin is Map && origin['type'] != 'auto') {
+      return nodeLabel(Map<String, dynamic>.from(origin));
+    }
+    final template = node['_xray_template'];
+    final outbounds = template is Map ? template['outbounds'] : null;
+    if (outbounds is List) {
+      for (final outbound in outbounds) {
+        if (outbound is! Map || outbound['protocol'] != 'vless') continue;
+        final stream = outbound['streamSettings'];
+        if (stream is Map) return nodeLabel({
+          'type': 'vless', '_xray_outbound': outbound,
+        });
+      }
+    }
+    return 'VLESS / XHTTP / TLS';
+  }
   final raw = node['_xray_outbound'];
   final stream = raw is Map ? raw['streamSettings'] : null;
   final transport = node['transport'];

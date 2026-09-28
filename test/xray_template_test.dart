@@ -13,6 +13,22 @@ import 'fixtures.dart';
 
 
 void main() {
+  test('AutoBS label uses the original loopback host transport and security', () {
+    final auto = <String, dynamic>{
+      'type': 'auto',
+      '_origin_node': {
+        'type': 'vless',
+        'transport': {'type': 'xhttp'},
+        'tls': {'enabled': true},
+      },
+    };
+    expect(nodeLabel(auto), 'VLESS / XHTTP / TLS');
+    auto['_origin_node'] = {
+      'type': 'vless', 'tls': {'enabled': true, 'reality': <String, dynamic>{}},
+    };
+    expect(nodeLabel(auto), 'VLESS / TCP / REALITY');
+  });
+
   test('Remnawave selector injects real endpoints and drops absent fallback', () {
     const uuid = '00000000-0000-4000-8000-000000000001';
     final links = [

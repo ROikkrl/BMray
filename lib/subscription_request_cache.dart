@@ -54,8 +54,7 @@ class SubscriptionRequestCache {
       final start = (length - _limitBytes ~/ 2).clamp(0, length).toInt();
       await source.setPosition(start);
       if (start > 0) {
-        // Start with a complete JSON line, even when the byte offset is in UTF-8.
-        while (await source.position() < length && await source.readByte() != 10) {}
+        await _skipPartialLine(source, length);
       }
       while (true) {
         final chunk = await source.read(64 * 1024);
@@ -86,7 +85,7 @@ class SubscriptionRequestCache {
       final start = (length - 256 * 1024).clamp(0, length).toInt();
       await source.setPosition(start);
       if (start > 0) {
-        while (await source.position() < length && await source.readByte() != 10) {}
+        await _skipPartialLine(source, length);
       }
       return utf8.decode(await source.read(length - await source.position()));
     } finally {
@@ -98,6 +97,21 @@ class SubscriptionRequestCache {
     final file = await _file();
     if (await file.exists()) await file.delete();
   });
+
+  /// Move to the first complete JSON line without one asynchronous read per
+  /// byte. The original byte-wise scan could exceed the CI timeout on disk.
+  Future<void> _skipPartialLine(RandomAccessFile source, int length) async {
+    while (true) {
+      final remaining = length - await source.position();
+      if (remaining <= 0) return;
+      final chunk = await source.read(remaining < 64 * 1024 ? remaining : 64 * 1024);
+      final newline = chunk.indexOf(10);
+      if (newline >= 0) {
+        await source.setPosition(await source.position() - chunk.length + newline + 1);
+        return;
+      }
+    }
+  }
 }
 
 Map<String, dynamic> subscriptionRequestTarget(Uri uri) => {
