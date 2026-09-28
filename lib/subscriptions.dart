@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,7 @@ import 'subscription_identity.dart';
 import 'xray_subscription.dart';
 import 'remnawave_template.dart';
 import 'subscription_request_cache.dart';
+import 'subscription_preview_cache.dart';
 
 class Subscription {
   Subscription({
@@ -93,24 +95,44 @@ class Subscription {
   };
 }
 
+List<SubscriptionPreview> subscriptionPreviews(List<Subscription> subscriptions) => [
+  for (final item in subscriptions)
+    SubscriptionPreview(item.id, item.name,
+      [for (final node in item.nodes) node['tag']?.toString() ?? '']),
+];
+
 class SubscriptionStore {
   static const _storage = FlutterSecureStorage();
   static const _key = 'bmray.subscriptions.v1';
   SubscriptionIdentity? identity;
   final requestLog = SubscriptionRequestCache();
+  final previewCache = SubscriptionPreviewCache();
+
+  Future<List<SubscriptionPreview>> loadPreview() => previewCache.read();
 
   Future<List<Subscription>> load() async {
     final value = await _storage.read(key: _key);
-    if (value == null) return [];
-    return (jsonDecode(value) as List)
+    if (value == null) {
+      unawaited(previewCache.clear().catchError((Object _) {}));
+      return [];
+    }
+    final subscriptions = (jsonDecode(value) as List)
         .map((e) => Subscription.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
+    unawaited(previewCache.save(subscriptionPreviews(subscriptions))
+        .catchError((Object _) {}));
+    return subscriptions;
   }
 
-  Future<void> save(List<Subscription> subscriptions) => _storage.write(
-    key: _key,
-    value: jsonEncode(subscriptions.map((e) => e.toJson()).toList()),
-  );
+  Future<void> save(List<Subscription> subscriptions) async {
+    await _storage.write(key: _key,
+      value: jsonEncode(subscriptions.map((e) => e.toJson()).toList()));
+    try {
+      await previewCache.save(subscriptionPreviews(subscriptions));
+    } catch (_) {
+      // Display cache failures never affect the canonical encrypted store.
+    }
+  }
 
   Future<Subscription> import(String name, String url) async {
     final input = url.trim();

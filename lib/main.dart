@@ -11,6 +11,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:vpn_plugin/vpn_plugin.dart';
 
 import 'subscriptions.dart';
+import 'subscription_preview_cache.dart';
 import 'subscription_identity.dart';
 import 'xray_bridge.dart';
 import 'node_label.dart';
@@ -71,6 +72,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Map<String, DateTime> _autoRetryAfter = {};
   DateTime? _connectedAt;
   List<Subscription> _subscriptions = [];
+  List<SubscriptionPreview> _cachedPreviews = [];
+  bool _canonicalSubscriptionsLoaded = false;
   final Set<String> _expandedSubscriptionIds = {};
   String? _subscriptionId;
   int _nodeIndex = 0;
@@ -107,6 +110,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _perAppPackages = {};
   bool _showSystemApps = false;
   List<Map<String, dynamic>> _installedApps = [];
+  bool _appsLoading = false;
+  bool _appsLoaded = false;
 
   Subscription? get _selected {
     for (final item in _subscriptions) {
@@ -186,10 +191,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _initialize() async {
+    unawaited(_loadCachedPreviews());
     try {
       final subscriptions = await _store.load();
       if (!mounted) return;
       setState(() {
+        _canonicalSubscriptionsLoaded = true;
+        _cachedPreviews = [];
         _subscriptions = subscriptions;
         _expandedSubscriptionIds.addAll(subscriptions.map((item) => item.id));
         _initialSubscriptionsLoaded = true;
@@ -249,7 +257,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _initialized = true;
       _rememberSelection();
       if (Platform.isAndroid) await _connectFromQuickTile();
-      if (Platform.isAndroid) unawaited(_loadInstalledApps());
       if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
       if (mounted)
@@ -260,12 +267,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _loadCachedPreviews() async {
+    final previews = await _store.loadPreview();
+    if (previews.isEmpty) return;
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (!mounted || _canonicalSubscriptionsLoaded) return;
+    setState(() => _cachedPreviews = previews);
+  }
+
   Future<void> _loadInstalledApps() async {
+    if (_appsLoading || _appsLoaded) return;
+    setState(() => _appsLoading = true);
     try {
       final apps = await _vpn.installedApps();
-      if (mounted) setState(() => _installedApps = apps);
+      if (mounted) setState(() {
+        _installedApps = apps;
+        _appsLoaded = true;
+      });
     } catch (_) {
       // An old native plugin can still display subscriptions.
+    } finally {
+      if (mounted) setState(() => _appsLoading = false);
     }
   }
 
@@ -1155,7 +1177,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             const SizedBox(height: 12),
             if (!_initialSubscriptionsLoaded)
               const Center(child: CircularProgressIndicator()),
-            if (_initialSubscriptionsLoaded && _subscriptions.isEmpty)
+            if (!_canonicalSubscriptionsLoaded && _cachedPreviews.isNotEmpty) ...[
+              Padding(padding: const EdgeInsets.only(bottom: 8),
+                child: Text(_t('Показан сохранённый список. Подключение станет '
+                    'доступно после загрузки защищённых данных.',
+                    'Showing a saved list. Connection will be available '
+                    'after protected data loads.'),
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+              for (final preview in _cachedPreviews) _previewCard(preview),
+            ],
+            if (_initialSubscriptionsLoaded && _subscriptions.isEmpty &&
+                _cachedPreviews.isEmpty)
               Card(child: Padding(padding: const EdgeInsets.all(18), child: Text(
                 _t('Нажмите +, чтобы добавить подписку или ссылку сервера.',
                     'Tap + to add a subscription or server link.'),
@@ -1320,12 +1352,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         'в журнал не записываются. Исходные подписки и выбранный сервер '
         'хранятся отдельно; очистка кэша их не удалит. Android и iOS могут '
         'очистить временный кэш автоматически. Лимит относится к этому '
-        'журналу; журнал ядра и системные временные файлы в него не входят.',
+        'журналу; журнал ядра и системные временные файлы в него не входят. '
+        'Для быстрого запуска временно хранится только список названий '
+        'подписок и серверов без ссылок, конфигов и ключей. Пока защищённые '
+        'данные не загружены, подключение из такого списка недоступно.',
         'The cache stores subscription request logs: time, host without secret '
         'path or query, header names, User-Agent, HTTP status and response '
         'format. Links, credentials, HWID, Cookie values and response bodies '
         'are not logged. Imported subscriptions and selected server are stored '
-        'separately. This limit does not include core logs or system cache.')),
+        'separately. This limit does not include core logs or system cache. '
+        'For faster startup, a temporary list of subscription and server '
+        'names is kept without links, configs or keys. It cannot connect '
+        'until protected data loads.')),
     const SizedBox(height: 20),
     Text(_t('Максимальный размер: $_cacheLimitMb МБ',
         'Maximum size: $_cacheLimitMb MB'),
@@ -1350,6 +1388,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _cacheSize = _store.requestLog.sizeBytes();
           _requestLogs = _store.requestLog.read();
         });
+      },
+    ),
+    OutlinedButton.icon(
+      icon: const Icon(Icons.cleaning_services_outlined),
+      label: Text(_t('Очистить сохранённый список', 'Clear saved list')),
+      onPressed: () async {
+        await _store.previewCache.clear();
+        if (mounted) setState(() => _cachedPreviews = []);
       },
     ),
   ]);
@@ -1404,12 +1450,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
         trailing: const Icon(Icons.chevron_right_rounded),
-        onTap: () => setState(() {
-          _pageIndex = page;
-          if (page == 6) _cacheSize = _store.requestLog.sizeBytes();
-          if (page == 7) _requestLogs = _store.requestLog.read();
-          if (page == 4) _logs = _vpn.readLogs();
-        }),
+        onTap: () {
+          setState(() {
+            _pageIndex = page;
+            if (page == 6) _cacheSize = _store.requestLog.sizeBytes();
+            if (page == 7) _requestLogs = _store.requestLog.read();
+            if (page == 4) _logs = _vpn.readLogs();
+          });
+          if (page == 8) unawaited(_loadInstalledApps());
+        },
       ),
       const Divider(height: 1),
     ]);
@@ -1634,8 +1683,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           prefixIcon: const Icon(Icons.search_rounded))),
       Padding(padding: const EdgeInsets.symmetric(vertical: 12),
         child: Text('${_t('Выбрано', 'Selected')}: ${_perAppPackages.length}')),
-      if (_installedApps.isEmpty) Text(_t('Список приложений недоступен.',
-          'App list is unavailable.')),
+      if (_appsLoading) const Center(child: CircularProgressIndicator()),
+      if (!_appsLoading && _installedApps.isEmpty) Text(_t(
+          'Список приложений недоступен.', 'App list is unavailable.')),
       for (final app in shown) CheckboxListTile(
         dense: true,
         secondary: FutureBuilder<Uint8List?>(
@@ -1861,6 +1911,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ]),
       );
     },
+  );
+
+  Widget _previewCard(SubscriptionPreview preview) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Card(color: appearance.color('subsHeaderColor'),
+      child: Padding(padding: const EdgeInsets.all(14), child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(preview.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          for (final name in preview.nodeNames) Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: appearance.color('serverRowSubTitleTextColor')))),
+        ]))),
   );
 
   Widget _subscriptionCard(Subscription item, bool canChange) {
