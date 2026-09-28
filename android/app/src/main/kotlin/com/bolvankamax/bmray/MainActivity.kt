@@ -30,7 +30,8 @@ class MainActivity : FlutterActivity() {
                         try {
                             getSystemService(StatusBarManager::class.java).requestAddTileService(
                                 ComponentName(this, BMrayQuickTileService::class.java),
-                                "BMray VPN", Icon.createWithResource(this, R.drawable.ic_bmray_tile),
+                                "BMray VPN", Icon.createWithResource(this,
+                                    dev.flexvpn.flutter_singbox_vpn.R.drawable.ic_bmray_tile),
                                 mainExecutor
                             ) { code -> result.success(code == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED ||
                                 code == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED) }
