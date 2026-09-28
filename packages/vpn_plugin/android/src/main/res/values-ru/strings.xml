@@ -1,0 +1,4 @@
+<resources>
+    <string name="bmray_tile_connected">Подключено</string>
+    <string name="bmray_tile_disconnected">Не подключено</string>
+</resources>

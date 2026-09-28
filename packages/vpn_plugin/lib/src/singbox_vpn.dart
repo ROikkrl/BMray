@@ -54,6 +54,19 @@ class SingboxVpn {
   /// Stop the tunnel.
   Future<void> stop() => _methods.invokeMethod<void>('stop');
 
+  /// Keep the Android Quick Settings tile aligned with the selected server.
+  /// The native side encrypts this profile using the Android Keystore.
+  Future<void> setQuickTileProfile(String? configJson, {String? xrayConfig}) async {
+    try {
+      await _methods.invokeMethod<void>('setQuickTileProfile', {
+        'config': configJson,
+        if (xrayConfig != null) 'xrayConfig': xrayConfig,
+      });
+    } on MissingPluginException {
+      // Quick Settings tiles are Android-only.
+    }
+  }
+
   /// Reports an Android VPN transport after this application's tunnel stops.
   Future<bool> otherVpnActive() async {
     try {
