@@ -109,6 +109,16 @@ class FlutterSingboxVpnPlugin :
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "getLauncherIcon" -> result.success(BMrayLauncherIcon.current(context))
+            "setLauncherIcon" -> {
+                try {
+                    BMrayLauncherIcon.set(context,
+                        call.argument<String>("variant") ?: "classic")
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("launcher_icon", e.message ?: "Could not change launcher icon", null)
+                }
+            }
             "start" -> {
                 pendingConfig = call.argument<String>("config")
                 pendingXrayConfig = call.argument<String>("xrayConfig")
@@ -126,8 +136,10 @@ class FlutterSingboxVpnPlugin :
             "setQuickTileProfile" -> {
                 try {
                     QuickTileProfile.save(context,
-                        call.argument<String>("config"), call.argument<String>("xrayConfig"))
+                        call.argument<String>("config"), call.argument<String>("xrayConfig"),
+                        call.argument<String>("name"))
                     BMrayQuickTileService.refresh(context)
+                    BMrayWidgetProvider.refresh(context)
                     result.success(null)
                 } catch (e: Exception) {
                     result.error("quick_tile_profile", "Не удалось сохранить профиль плитки VPN", null)

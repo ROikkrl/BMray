@@ -18,16 +18,17 @@ internal object QuickTileProfile {
     private const val PAYLOAD = "profile"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
 
-    data class Config(val singBox: String, val xray: String?)
+    data class Config(val singBox: String, val xray: String?, val name: String?)
 
-    fun save(context: Context, singBox: String?, xray: String?) {
+    fun save(context: Context, singBox: String?, xray: String?, name: String?) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (singBox.isNullOrEmpty()) {
             prefs.edit().remove(PAYLOAD).commit()
             return
         }
         val plain = JSONObject().put("singBox", singBox)
-            .put("xray", xray ?: JSONObject.NULL).toString().toByteArray(Charsets.UTF_8)
+            .put("xray", xray ?: JSONObject.NULL)
+            .put("name", name ?: JSONObject.NULL).toString().toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val sealed = cipher.iv + cipher.doFinal(plain)
@@ -46,7 +47,8 @@ internal object QuickTileProfile {
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, sealed.copyOfRange(0, 12)))
             val json = JSONObject(String(cipher.doFinal(sealed.copyOfRange(12, sealed.size)), Charsets.UTF_8))
             Config(json.getString("singBox"),
-                if (json.isNull("xray")) null else json.getString("xray"))
+                if (json.isNull("xray")) null else json.getString("xray"),
+                if (json.isNull("name")) null else json.getString("name"))
         } catch (_: Exception) {
             // Restored app data without its device-bound key must never be used.
             prefs.edit().remove(PAYLOAD).commit()

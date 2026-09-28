@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import io.nekohasekai.libbox.CommandServer
 import io.nekohasekai.libbox.Libbox
@@ -50,6 +52,14 @@ class SingBoxVpnService : VpnService() {
     @Volatile var xrayActive: Boolean = false
         private set
     private val worker = Executors.newSingleThreadExecutor()
+    private val widgetHandler = Handler(Looper.getMainLooper())
+    private val widgetTick = object : Runnable {
+        override fun run() {
+            if (state != "connected") return
+            BMrayWidgetProvider.refresh(this@SingBoxVpnService)
+            widgetHandler.postDelayed(this, 1000)
+        }
+    }
     var tunFd: ParcelFileDescriptor? = null
 
     @Volatile
@@ -74,6 +84,8 @@ class SingBoxVpnService : VpnService() {
         statusListener?.invoke(value, message)
         BMrayQuickTileService.refresh(this)
         BMrayWidgetProvider.refresh(this)
+        widgetHandler.removeCallbacks(widgetTick)
+        if (value == "connected") widgetHandler.postDelayed(widgetTick, 1000)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -188,6 +200,7 @@ class SingBoxVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        widgetHandler.removeCallbacks(widgetTick)
         if (current === this) current = null
         stopping = true
         worker.execute {

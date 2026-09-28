@@ -21,8 +21,10 @@ enum PingMethod { proxyGet, tcp, icmp }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await appearance.load();
   runApp(const BMrayApp());
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(appearance.load());
+  });
 }
 
 class BMrayApp extends StatelessWidget {
@@ -46,7 +48,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _vpn = SingboxVpn();
   static const _quickTile = MethodChannel('bmray/quick_tile');
   final _store = SubscriptionStore();
@@ -75,6 +77,9 @@ class _HomePageState extends State<HomePage> {
   VpnStatus _status = const VpnStatus.disconnected();
   bool _busy = false;
   bool _initialized = false;
+  bool _initialSubscriptionsLoaded = false;
+  bool _appVisible = true;
+  bool _statusPollInFlight = false;
   bool _tileConnectionPending = false;
   bool _handlingTileConnection = false;
   bool _pingBusy = false;
@@ -121,6 +126,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (Platform.isAndroid) {
       _quickTile.setMethodCallHandler((call) async {
         if (call.method == 'connect') {
@@ -138,10 +144,35 @@ class _HomePageState extends State<HomePage> {
     });
     _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _status.state == VpnState.connected) setState(() {});
+      if (_appVisible && _initialized) unawaited(_syncVpnStatus());
     });
     _subscriptionTimer = Timer.periodic(const Duration(minutes: 1),
         (_) => _refreshDueSubscriptions());
     _initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appVisible = state == AppLifecycleState.resumed;
+    if (_appVisible) unawaited(_syncVpnStatus());
+  }
+
+  Future<void> _syncVpnStatus() async {
+    if (!_initialized || _statusPollInFlight) return;
+    _statusPollInFlight = true;
+    try {
+      final current = await _vpn.currentStatus();
+      if (!mounted) return;
+      if (current.state != _status.state ||
+          current.connectedAt != _status.connectedAt ||
+          current.message != _status.message) {
+        setState(() => _setStatus(current));
+      }
+    } catch (_) {
+      // The event stream remains the primary source of VPN state.
+    } finally {
+      _statusPollInFlight = false;
+    }
   }
 
   void _setStatus(VpnStatus status) {
@@ -157,15 +188,19 @@ class _HomePageState extends State<HomePage> {
   Future<void> _initialize() async {
     try {
       final subscriptions = await _store.load();
+      if (!mounted) return;
+      setState(() {
+        _subscriptions = subscriptions;
+        _expandedSubscriptionIds.addAll(subscriptions.map((item) => item.id));
+        _initialSubscriptionsLoaded = true;
+      });
       final identity = await SubscriptionIdentity.load();
       _store.identity = identity;
       final status = await _vpn.currentStatus();
       var perApp = (mode: 'off', packages: <String>[]);
-      var apps = <Map<String, dynamic>>[];
       if (Platform.isAndroid) {
         try {
           perApp = await _vpn.perAppSettings();
-          apps = await _vpn.installedApps();
         } catch (_) {
           // An old native plugin still allows saved subscriptions to load.
         }
@@ -194,7 +229,6 @@ class _HomePageState extends State<HomePage> {
           _perAppMode = perApp.mode;
           _perAppPackages.addAll(perApp.packages);
           _showSystemApps = showSystemApps == 'true';
-          _installedApps = apps;
           _cacheSize = _store.requestLog.sizeBytes();
           _hwidInput.text = identity.hwid;
           _userAgentInput.text = identity.userAgent;
@@ -215,15 +249,29 @@ class _HomePageState extends State<HomePage> {
       _initialized = true;
       _rememberSelection();
       if (Platform.isAndroid) await _connectFromQuickTile();
+      if (Platform.isAndroid) unawaited(_loadInstalledApps());
       if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
       if (mounted)
-        setState(() => _error = 'Не удалось открыть защищённое хранилище.');
+        setState(() {
+          _initialSubscriptionsLoaded = true;
+          _error = 'Не удалось открыть защищённое хранилище.';
+        });
+    }
+  }
+
+  Future<void> _loadInstalledApps() async {
+    try {
+      final apps = await _vpn.installedApps();
+      if (mounted) setState(() => _installedApps = apps);
+    } catch (_) {
+      // An old native plugin can still display subscriptions.
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (Platform.isAndroid) _quickTile.setMethodCallHandler(null);
     _statusSubscription?.cancel();
     _uptimeTimer?.cancel();
@@ -324,7 +372,7 @@ class _HomePageState extends State<HomePage> {
       try {
         final profile = node == null ? null : _connectionConfig(selected!, node);
         await _vpn.setQuickTileProfile(profile?.configJson,
-            xrayConfig: profile?.xrayJson);
+            xrayConfig: profile?.xrayJson, name: node?['tag']?.toString());
       } catch (_) {
         // Never leave a previous server armed when the selection cannot start.
         await _vpn.setQuickTileProfile(null);
@@ -1055,12 +1103,7 @@ class _HomePageState extends State<HomePage> {
           }),
           icon: Icon(_pageIndex == 0 ? Icons.settings_rounded : Icons.arrow_back_rounded),
         ),
-        title: _pageIndex == 0 ? Row(mainAxisSize: MainAxisSize.min, children: [
-          ClipRRect(borderRadius: BorderRadius.circular(7),
-            child: Image.asset('assets/brand/logo.jpg', width: 34, height: 34)),
-          const SizedBox(width: 10),
-          const Text('BMray', style: TextStyle(fontWeight: FontWeight.w800)),
-        ]) : Text(switch (_pageIndex) {
+        title: _pageIndex == 0 ? null : Text(switch (_pageIndex) {
           1 => _t('Настройки', 'Settings'),
           2 => _t('Пинг', 'Ping'),
           3 => _t('Информация', 'Information'),
@@ -1110,7 +1153,9 @@ class _HomePageState extends State<HomePage> {
             Text(_t('Подписки и серверы', 'Subscriptions and servers'),
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
-            if (_subscriptions.isEmpty)
+            if (!_initialSubscriptionsLoaded)
+              const Center(child: CircularProgressIndicator()),
+            if (_initialSubscriptionsLoaded && _subscriptions.isEmpty)
               Card(child: Padding(padding: const EdgeInsets.all(18), child: Text(
                 _t('Нажмите +, чтобы добавить подписку или ссылку сервера.',
                     'Tap + to add a subscription or server link.'),
@@ -1674,6 +1719,37 @@ class _HomePageState extends State<HomePage> {
           },
         ))),
       const SizedBox(height: 20),
+      Text(_t('Иконка приложения', 'App icon'),
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      if (!Platform.isAndroid) Text(_t('Выбор иконки доступен на Android.',
+          'Icon selection is available on Android.')),
+      if (Platform.isAndroid)
+        for (final variant in const ['classic', 'monochrome', 'purple', 'cyan'])
+          Padding(padding: const EdgeInsets.only(bottom: 8),
+            child: Card(child: ListTile(
+              leading: _launcherIconPreview(variant),
+              title: Text(switch (variant) {
+                'monochrome' => _t('Чёрно-белая', 'Black and white'),
+                'purple' => _t('Фиолетово-чёрная', 'Purple and black'),
+                'cyan' => _t('Голубо-чёрная', 'Cyan and black'),
+                _ => _t('Классическая', 'Classic'),
+              }),
+              trailing: appearance.launcherIcon == variant
+                ? Icon(Icons.circle, size: 12,
+                    color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () async {
+                try {
+                  await appearance.setLauncherIcon(variant);
+                  if (mounted) setState(() {});
+                } catch (_) {
+                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(_t('Не удалось сменить иконку.',
+                        'Could not change the app icon.'))));
+                }
+              },
+            ))),
+      const SizedBox(height: 20),
       Text(_t('Редактор собственной темы', 'Custom theme editor'),
         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
       const SizedBox(height: 8),
@@ -1703,6 +1779,24 @@ class _HomePageState extends State<HomePage> {
           if (mounted) setState(() {});
         })),
     ]);
+  }
+
+  Widget _launcherIconPreview(String variant) {
+    if (variant == 'classic') return ClipRRect(
+      borderRadius: BorderRadius.circular(9),
+      child: Image.asset('assets/brand/logo.jpg', width: 42, height: 42));
+    final background = switch (variant) {
+      'purple' => const Color(0xFF090513),
+      'cyan' => const Color(0xFF03101C),
+      _ => const Color(0xFF090909),
+    };
+    final mark = switch (variant) {
+      'purple' => const Color(0xFFB78AFF),
+      'cyan' => const Color(0xFF41C9FF),
+      _ => Colors.white,
+    };
+    return CustomPaint(size: const Size(42, 42),
+      painter: _LauncherIconPainter(background, mark));
   }
 
   Widget _informationView() => FutureBuilder<String>(
@@ -1974,6 +2068,42 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
+}
+
+class _LauncherIconPainter extends CustomPainter {
+  const _LauncherIconPainter(this.background, this.mark);
+  final Color background;
+  final Color mark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size,
+        Radius.circular(size.width * 0.17)), Paint()..color = background);
+    final paint = Paint()..color = mark;
+    final scale = size.width / 108;
+    final points = <List<Offset>>[
+      [const Offset(52.5, 24), const Offset(47, 47),
+        const Offset(24, 52.5), const Offset(52.5, 52.5)],
+      [const Offset(55.5, 24), const Offset(61, 47),
+        const Offset(84, 52.5), const Offset(55.5, 52.5)],
+      [const Offset(24, 55.5), const Offset(47, 61),
+        const Offset(52.5, 84), const Offset(52.5, 55.5)],
+      [const Offset(55.5, 55.5), const Offset(84, 55.5),
+        const Offset(61, 61), const Offset(55.5, 84)],
+    ];
+    for (final facet in points) {
+      final path = Path()..moveTo(facet.first.dx * scale,
+          facet.first.dy * scale);
+      for (final point in facet.skip(1)) {
+        path.lineTo(point.dx * scale, point.dy * scale);
+      }
+      canvas.drawPath(path..close(), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_LauncherIconPainter oldDelegate) =>
+      oldDelegate.background != background || oldDelegate.mark != mark;
 }
 
 class _QrScanPage extends StatefulWidget {

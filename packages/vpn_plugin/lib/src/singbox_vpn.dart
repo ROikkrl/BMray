@@ -56,11 +56,13 @@ class SingboxVpn {
 
   /// Keep the Android Quick Settings tile aligned with the selected server.
   /// The native side encrypts this profile using the Android Keystore.
-  Future<void> setQuickTileProfile(String? configJson, {String? xrayConfig}) async {
+  Future<void> setQuickTileProfile(String? configJson, {String? xrayConfig,
+      String? name}) async {
     try {
       await _methods.invokeMethod<void>('setQuickTileProfile', {
         'config': configJson,
         if (xrayConfig != null) 'xrayConfig': xrayConfig,
+        if (name != null) 'name': name,
       });
     } on MissingPluginException {
       // Quick Settings tiles are Android-only.

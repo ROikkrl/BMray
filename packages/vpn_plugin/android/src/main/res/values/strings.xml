@@ -4,4 +4,6 @@
     <string name="bmray_widget_connect">Connect</string>
     <string name="bmray_widget_disconnect">Disconnect</string>
     <string name="bmray_widget_connecting">Working…</string>
+    <string name="bmray_widget_on">On</string>
+    <string name="bmray_widget_off">Off</string>
 </resources>
