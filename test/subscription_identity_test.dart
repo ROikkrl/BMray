@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:bmray/subscription_identity.dart';
+import 'package:bmray/subscriptions.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -34,5 +37,23 @@ void main() {
     expect(identity.isHappUserAgent, true);
     expect(identity.requestHeaders['user-agent'], 'hApP/android/9.9');
     expect(identity.xrayJsonUserAgent, 'hApP/android/9.9');
+  });
+
+  test('HTML response retries once with the exact requested Happ agent', () {
+    const identity = SubscriptionIdentity('BMray-0123456789', 'BMray/android/0.3.5');
+    const custom = SubscriptionIdentity('BMray-0123456789', 'hApP/custom');
+    const html = '<!doctype html><html><body>Subscription page</body></html>';
+    expect(subscriptionRetryUserAgent(html, identity),
+        'Happ/4.4.1/Android/17891107313301967618');
+    expect(subscriptionRetryUserAgent(html, custom), happHtmlRetryUserAgent);
+    expect(identity.requestHeaders['user-agent'], 'BMray/android/0.3.5');
+
+    const loopback = 'vless://00000000-0000-4000-8000-000000000001@'
+        '127.0.0.1:237#Auto';
+    final encoded = base64Encode(utf8.encode(loopback));
+    expect(subscriptionRetryUserAgent(encoded, identity),
+        identity.xrayJsonUserAgent);
+    expect(subscriptionRetryUserAgent(encoded, custom), isNull);
+    expect(subscriptionRetryUserAgent('{"outbounds":[]}', identity), isNull);
   });
 }
