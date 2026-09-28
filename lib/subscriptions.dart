@@ -365,7 +365,9 @@ class SubscriptionStore {
       updateInterval: original.updateInterval, originalBody: null);
     final reason = html ? 'html-response' : 'base64-loopback-template';
     final subscriptionIdentity = identity ??= await SubscriptionIdentity.load();
-    if (subscriptionIdentity.isHappUserAgent) {
+    final retryUserAgent = subscriptionRetryUserAgent(
+        original.body, subscriptionIdentity);
+    if (retryUserAgent == null) {
       await requestLog.append({'event': 'compatibility', 'id': original.id,
         'reason': reason, 'result': 'custom-happ-agent-kept'});
       return (id: original.id, body: original.body, title: original.title,
@@ -375,7 +377,8 @@ class SubscriptionStore {
     await requestLog.append({'event': 'compatibility', 'id': original.id,
       'reason': reason, 'action': 'retry-xray-json'});
     try {
-      final retried = await _download(initial, requestXrayJson: true);
+      final retried = await _download(initial, requestXrayJson: true,
+          retryUserAgent: retryUserAgent);
       final json = retried.body.trimLeft();
       final usable = (html || json.startsWith('{') || json.startsWith('[')) &&
           _parse(retried.body).nodes.isNotEmpty;
@@ -398,7 +401,7 @@ class SubscriptionStore {
 
   Future<({String id, String body, String? title, String? announce,
       String? userInfo, String? updateInterval})> _download(Uri initial,
-          {bool requestXrayJson = false}) async {
+          {bool requestXrayJson = false, String? retryUserAgent}) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     final requestId = DateTime.now().microsecondsSinceEpoch.toString();
@@ -421,7 +424,7 @@ class SubscriptionStore {
         final headers = subscriptionIdentity.requestHeaders;
         if (requestXrayJson) {
           headers[HttpHeaders.userAgentHeader] =
-              subscriptionIdentity.xrayJsonUserAgent;
+              retryUserAgent ?? subscriptionIdentity.xrayJsonUserAgent;
           request.headers.set(HttpHeaders.acceptHeader,
               'application/json, text/plain, */*');
         }
@@ -519,6 +522,18 @@ class SubscriptionStore {
       client.close(force: true);
     }
   }
+}
+
+const happHtmlRetryUserAgent = 'Happ/4.4.1/Android/17891107313301967618';
+
+/// A server returning a browser page gets one request with the exact Happ
+/// identifier. The earlier Base64 loopback fallback keeps its existing agent.
+String? subscriptionRetryUserAgent(String body, SubscriptionIdentity identity) {
+  if (looksLikeHtmlSubscriptionResponse(body)) return happHtmlRetryUserAgent;
+  if (needsXrayJsonRetry(body) && !identity.isHappUserAgent) {
+    return identity.xrayJsonUserAgent;
+  }
+  return null;
 }
 
 /// Base64 links pointing to the phone itself need the server-generated
