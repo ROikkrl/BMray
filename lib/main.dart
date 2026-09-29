@@ -1740,7 +1740,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _themesView() {
     final names = [...builtInThemes.keys, ...appearance.customThemes.keys];
-    return ListView(padding: const EdgeInsets.all(16), children: [
+    // Give this page its own scrollable element. Otherwise Flutter can reuse
+    // the Settings ListView offset and open below the theme choices.
+    return ListView(key: const ValueKey('themes-view'),
+      padding: const EdgeInsets.all(16), children: [
       Text(_t('Темы оформления', 'Themes'),
         style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
       const SizedBox(height: 8),
