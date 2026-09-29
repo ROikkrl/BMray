@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -167,7 +168,8 @@ class AppearanceSettings extends ChangeNotifier {
       // A corrupt appearance preference does not prevent the app from opening.
     }
     notifyListeners();
-    await _syncWidgetTheme();
+    // Widget painting does not need to hold up the first app frame.
+    unawaited(_syncWidgetTheme());
   }
 
   Future<void> _syncWidgetTheme() async {
