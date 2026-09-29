@@ -22,10 +22,8 @@ enum PingMethod { proxyGet, tcp, icmp }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await appearance.load();
   runApp(const BMrayApp());
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(appearance.load());
-  });
 }
 
 class BMrayApp extends StatelessWidget {
@@ -193,7 +191,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _initialize() async {
     unawaited(_loadCachedPreviews());
     try {
+      // Read the saved selection while subscriptions are loading. Never render
+      // the first server as selected before the saved choice is available.
+      final selection = Future.wait<String?>([
+        _settingsStorage.read(key: _selectedSubscriptionKey),
+        _settingsStorage.read(key: _selectedNodeKey),
+      ]).catchError((Object _) => <String?>[null, null]);
       final subscriptions = await _store.load();
+      final savedSelection = await selection;
+      final storedSubscription = savedSelection[0];
+      final storedNode = savedSelection[1];
       if (!mounted) return;
       setState(() {
         _canonicalSubscriptionsLoaded = true;
@@ -201,6 +208,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _subscriptions = subscriptions;
         _expandedSubscriptionIds.addAll(subscriptions.map((item) => item.id));
         _initialSubscriptionsLoaded = true;
+        if (subscriptions.isNotEmpty) {
+          final index = subscriptions.indexWhere((e) => e.id == storedSubscription);
+          final chosen = index < 0 ? subscriptions.first : subscriptions[index];
+          _subscriptionId = chosen.id;
+          final match = chosen.nodes.indexWhere((node) =>
+              _nodeSelectionKey(node) == storedNode);
+          _nodeIndex = match < 0 ? _firstUsableIndex(chosen) : match;
+        }
       });
       final identity = await SubscriptionIdentity.load();
       _store.identity = identity;
@@ -214,14 +229,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         }
       }
       String? storedTimeout;
-      String? storedSubscription;
-      String? storedNode;
       String? storedCacheLimit;
       String? showSystemApps;
       try {
         storedTimeout = await _settingsStorage.read(key: _proxyTimeoutKey);
-        storedSubscription = await _settingsStorage.read(key: _selectedSubscriptionKey);
-        storedNode = await _settingsStorage.read(key: _selectedNodeKey);
         storedCacheLimit = await _settingsStorage.read(key: _cacheLimitKey);
         showSystemApps = await _settingsStorage.read(key: _showSystemAppsKey);
       } catch (_) {
@@ -245,14 +256,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _setStatus(status);
           final timeout = int.tryParse(storedTimeout ?? '');
           if ([2, 4, 6, 10].contains(timeout)) _proxyTimeoutSeconds = timeout!;
-          if (subscriptions.isNotEmpty) {
-            final index = subscriptions.indexWhere((e) => e.id == storedSubscription);
-            final chosen = index < 0 ? subscriptions.first : subscriptions[index];
-            _subscriptionId = chosen.id;
-            final match = chosen.nodes.indexWhere((node) =>
-                _nodeSelectionKey(node) == storedNode);
-            _nodeIndex = match < 0 ? _firstUsableIndex(chosen) : match;
-          }
         });
       _initialized = true;
       _rememberSelection();
@@ -1870,8 +1873,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     ),
   );
 
-  Widget _infoTile(String title, String value) => Card(
-    child: Padding(padding: const EdgeInsets.all(14),
+  Widget _infoTile(String title, String value) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(title, style: const TextStyle(color: Color(0xFF9DAEC7))),
         const SizedBox(height: 4),
