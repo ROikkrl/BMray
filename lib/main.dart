@@ -1878,11 +1878,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _infoTile(String title, String value) => Padding(
     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(color: Color(0xFF9DAEC7))),
-        const SizedBox(height: 4),
-        SelectableText(value),
-      ])),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(title, style: const TextStyle(color: Color(0xFF9DAEC7))),
+      const SizedBox(height: 4),
+      SelectableText(value),
+    ]),
   );
 
   Widget _logsView() => FutureBuilder<String>(
