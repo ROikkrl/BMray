@@ -195,6 +195,7 @@ class FlutterSingboxVpnPlugin :
                     (colors?.get("background") as? Number)?.toInt(),
                     (colors?.get("foreground") as? Number)?.toInt(),
                     (colors?.get("accent") as? Number)?.toInt(),
+                    (colors?.get("compactActive") as? Number)?.toInt(),
                     (colors?.get("buttonText") as? Number)?.toInt(),
                     (colors?.get("subtitle") as? Number)?.toInt(),
                     (colors?.get("icon") as? Number)?.toInt())
