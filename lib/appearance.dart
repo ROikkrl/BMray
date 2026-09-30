@@ -179,6 +179,7 @@ class AppearanceSettings extends ChangeNotifier {
         'foreground': color('serverRowTitleTextColor').toARGB32(),
         'subtitle': color('serverRowSubTitleTextColor').toARGB32(),
         'accent': color('buttonColor').toARGB32(),
+        'compactActive': color('settingsControlsTintColor').toARGB32(),
         'icon': color('topBarButtonsColor').toARGB32(),
         'buttonText': color('buttonTextColor').toARGB32(),
       });
