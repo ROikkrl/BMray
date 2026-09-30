@@ -30,12 +30,12 @@
             android:textStyle="bold" />
         <TextView
             android:id="@+id/widget_action"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="64dp"
+            android:layout_height="48dp"
             android:background="@drawable/bmray_widget_action_background"
-            android:padding="8dp"
+            android:gravity="center"
             android:text="@string/bmray_widget_connect"
-            android:textSize="11sp"
+            android:textSize="14sp"
             android:textStyle="bold" />
     </LinearLayout>
     <TextView

@@ -3,14 +3,19 @@
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:layout_margin="4dp"
-    android:background="@drawable/bmray_widget_background"
     android:contentDescription="@string/bmray_widget_connect">
-    <ImageView
-        android:id="@+id/widget_power"
-        android:layout_width="36dp"
-        android:layout_height="36dp"
+    <FrameLayout
+        android:id="@+id/widget_compact_surface"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
         android:layout_gravity="center"
-        android:contentDescription="@string/bmray_widget_connect"
-        android:src="@drawable/ic_bmray_power" />
+        android:background="@drawable/bmray_widget_background">
+        <ImageView
+            android:id="@+id/widget_power"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_gravity="center"
+            android:contentDescription="@string/bmray_widget_connect"
+            android:src="@drawable/ic_bmray_power" />
+    </FrameLayout>
 </FrameLayout>
