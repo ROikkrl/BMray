@@ -31,11 +31,12 @@ class BMrayWidgetProvider : AppWidgetProvider() {
         }
 
         fun setTheme(context: Context, background: Int?, foreground: Int?,
-            accent: Int?, buttonText: Int?, subtitle: Int?, icon: Int?) {
+            accent: Int?, compactActive: Int?, buttonText: Int?, subtitle: Int?, icon: Int?) {
             val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             background?.let { editor.putInt("background", it) }
             foreground?.let { editor.putInt("foreground", it) }
             accent?.let { editor.putInt("accent", it) }
+            compactActive?.let { editor.putInt("compactActive", it) }
             buttonText?.let { editor.putInt("buttonText", it) }
             subtitle?.let { editor.putInt("subtitle", it) }
             icon?.let { editor.putInt("icon", it) }
@@ -55,6 +56,7 @@ class BMrayWidgetProvider : AppWidgetProvider() {
             val background = prefs.getInt("background", Color.rgb(16, 24, 39))
             val foreground = prefs.getInt("foreground", Color.WHITE)
             val accent = prefs.getInt("accent", Color.rgb(29, 37, 56))
+            val compactActive = prefs.getInt("compactActive", Color.rgb(121, 118, 246))
             val subtitle = prefs.getInt("subtitle", Color.rgb(157, 174, 199))
             val buttonText = prefs.getInt("buttonText", Color.WHITE)
             val icon = prefs.getInt("icon", Color.WHITE)
@@ -77,19 +79,34 @@ class BMrayWidgetProvider : AppWidgetProvider() {
                     val views = RemoteViews(context.packageName, layout)
                     val compact = layout == R.layout.bmray_widget_compact
                     val tall = layout == R.layout.bmray_widget_tall
-                    val rootColor = if (compact) accent else background
+                    val compactColor = if (connected) compactActive else background
                     if (Build.VERSION.SDK_INT >= 31) {
-                        views.setColorStateList(R.id.widget_root, "setBackgroundTintList",
-                            ColorStateList.valueOf(rootColor))
-                        if (!compact) views.setColorStateList(R.id.widget_action,
-                            "setBackgroundTintList", ColorStateList.valueOf(accent))
+                        if (compact) {
+                            views.setColorStateList(R.id.widget_compact_surface,
+                                "setBackgroundTintList", ColorStateList.valueOf(compactColor))
+                        } else {
+                            views.setColorStateList(R.id.widget_root, "setBackgroundTintList",
+                                ColorStateList.valueOf(background))
+                            views.setColorStateList(R.id.widget_action,
+                                "setBackgroundTintList", ColorStateList.valueOf(accent))
+                        }
                     } else {
-                        views.setInt(R.id.widget_root, "setBackgroundColor", rootColor)
-                        if (!compact) views.setInt(R.id.widget_action,
-                            "setBackgroundColor", accent)
+                        if (compact) {
+                            views.setInt(R.id.widget_compact_surface, "setBackgroundResource",
+                                if (connected) R.drawable.bmray_widget_compact_on
+                                else R.drawable.bmray_widget_compact_off)
+                        } else {
+                            views.setInt(R.id.widget_root, "setBackgroundColor", background)
+                            views.setInt(R.id.widget_action, "setBackgroundColor", accent)
+                        }
                     }
                     if (compact) {
-                        views.setInt(R.id.widget_power, "setColorFilter", buttonText)
+                        views.setInt(R.id.widget_power, "setColorFilter",
+                            if (connected) {
+                                if (Build.VERSION.SDK_INT < 31 ||
+                                    Color.luminance(compactActive) > 0.5) Color.BLACK
+                                else Color.WHITE
+                            } else foreground)
                         views.setContentDescription(R.id.widget_root, context.getString(
                             if (connected) R.string.bmray_widget_disconnect
                             else R.string.bmray_widget_connect))
