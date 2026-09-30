@@ -2031,8 +2031,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 () => _ping(item, List.generate(item.nodes.length, (i) => i)),
               icon: const Icon(Icons.speed_rounded, size: 20)),
             IconButton(tooltip: _t('Обновить подписку', 'Refresh subscription'),
-              onPressed: !_busy && !_autoRefreshing &&
-                  (_pingBusy || !_status.state.isActive) && item.isRemote
+              onPressed: !_busy && !_autoRefreshing && item.isRemote
                   ? () => _refresh(item) : null,
               icon: const Icon(Icons.refresh_rounded, size: 20)),
             Text('${item.nodes.length}', style: const TextStyle(
