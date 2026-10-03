@@ -17,6 +17,8 @@ import 'xray_bridge.dart';
 import 'node_label.dart';
 import 'json_config_page.dart';
 import 'appearance.dart';
+import 'split_tunneling.dart';
+import 'deep_links.dart';
 
 enum PingMethod { proxyGet, tcp, icmp }
 
@@ -50,7 +52,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _vpn = SingboxVpn();
   static const _quickTile = MethodChannel('bmray/quick_tile');
+  static const _iosDeepLink = MethodChannel('bmray/deep_link');
   final _store = SubscriptionStore();
+  final _splitStore = SplitProfileStore();
+  final _geoIpFiles = GeoIpFiles();
   static const _settingsStorage = FlutterSecureStorage();
   static const _proxyTimeoutKey = 'bmray.proxyTimeoutSeconds';
   static const _cacheLimitKey = 'bmray.subscriptionCacheLimitMb';
@@ -92,7 +97,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late Future<String> _requestLogs = _store.requestLog.read();
   // 0: servers, 1: settings, 2: ping, 3: information, 4: core logs,
   // 5: user agent, 6: cache, 7: subscription requests,
-  // 8: per-app VPN, 9: language, 10: themes.
+  // 8: per-app VPN, 9: language, 10: themes, 11: split tunneling.
   int _pageIndex = 0;
   late final Future<String> _coreVersion = _vpn.coreVersion();
   late final Future<String> _appVersion = PackageInfo.fromPlatform().then(
@@ -110,6 +115,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _installedApps = [];
   bool _appsLoading = false;
   bool _appsLoaded = false;
+  List<SplitProfile> _splitProfiles = [];
+  SplitProfile? _activeSplit;
+  Map<String, String> _localGeoip = {};
+  bool _geoDownloading = false;
+  String? _queuedDeepLink;
+  Future<void> _linkQueue = Future<void>.value();
 
   Subscription? get _selected {
     for (final item in _subscriptions) {
@@ -130,11 +141,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (Platform.isAndroid) {
-      _quickTile.setMethodCallHandler((call) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      (Platform.isAndroid ? _quickTile : _iosDeepLink).setMethodCallHandler((call) async {
         if (call.method == 'connect') {
           _tileConnectionPending = true;
           if (_initialized) await _connectFromQuickTile();
+        } else if (call.method == 'deepLink' && call.arguments is String) {
+          _enqueueDeepLink(call.arguments as String);
         }
       });
     }
@@ -219,6 +232,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
       final identity = await SubscriptionIdentity.load();
       _store.identity = identity;
+      try {
+        final split = await _splitStore.load();
+        _splitProfiles = split.profiles;
+        for (final profile in split.profiles) {
+          if (profile.id == split.selected) _activeSplit = profile;
+        }
+        _localGeoip = await _geoIpFiles.available({
+          'cn', ...?_activeSplit?.geoipCodes,
+        });
+      } catch (_) {
+        // The VPN remains usable with global routing when profiles cannot load.
+      }
       final status = await _vpn.currentStatus();
       var perApp = (mode: 'off', packages: <String>[]);
       if (Platform.isAndroid) {
@@ -260,6 +285,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _initialized = true;
       _rememberSelection();
       if (Platform.isAndroid) await _connectFromQuickTile();
+      if (Platform.isAndroid) {
+        final initial = await _quickTile.invokeMethod<String>('consumeDeepLink');
+        if (initial != null) _enqueueDeepLink(initial);
+      } else if (Platform.isIOS) {
+        final initial = await _iosDeepLink.invokeMethod<String>('consumeDeepLink');
+        if (initial != null) _enqueueDeepLink(initial);
+      }
+      if (_queuedDeepLink != null) _enqueueDeepLink(_queuedDeepLink!);
       if (mounted) unawaited(_refreshDueSubscriptions());
     } catch (_) {
       if (mounted)
@@ -425,6 +458,109 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  void _enqueueDeepLink(String raw) {
+    if (!_initialized) { _queuedDeepLink = raw; return; }
+    _queuedDeepLink = null;
+    _linkQueue = _linkQueue.then((_) => _handleDeepLink(raw))
+        .catchError((Object error) {
+      if (mounted) setState(() => _error = error is FormatException
+          ? error.message : 'Не удалось обработать ссылку BMray.');
+    });
+  }
+
+  Future<bool> _confirmLink(String title, String details) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: Text(title), content: Text(details), actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false),
+          child: Text(_t('Отмена', 'Cancel'))),
+        FilledButton(onPressed: () => Navigator.pop(context, true),
+          child: Text(_t('Применить', 'Apply'))),
+      ])) ?? false;
+  }
+
+  Future<void> _handleDeepLink(String raw) async {
+    final link = BMrayLink.parse(raw);
+    if (!mounted) return;
+    setState(() => _pageIndex = 0);
+    switch (link.action) {
+      case BMrayLinkAction.open:
+        return;
+      case BMrayLinkAction.close:
+        if (await _confirmLink(_t('Закрыть BMray?', 'Close BMray?'),
+            _t('VPN продолжит работать, если он включён.',
+                'The VPN will keep running if connected.'))) {
+          await SystemNavigator.pop();
+        }
+        return;
+      case BMrayLinkAction.vpnOn:
+      case BMrayLinkAction.vpnOff:
+      case BMrayLinkAction.vpnToggle:
+        final status = await _vpn.currentStatus();
+        if (!mounted || status.state.isBusy) return;
+        setState(() => _setStatus(status));
+        final on = link.action == BMrayLinkAction.vpnOn;
+        final off = link.action == BMrayLinkAction.vpnOff;
+        if ((on && status.state.isActive) || (off && !status.state.isActive)) return;
+        if (await _confirmLink(_t('Изменить состояние VPN?', 'Change VPN state?'),
+            _t('Команда получена из внешней ссылки.',
+                'This command came from an external link.'))) await _toggle();
+        return;
+      case BMrayLinkAction.importUrl:
+        final uri = Uri.tryParse(link.value ?? '');
+        if (uri == null || uri.scheme != 'https' || uri.host.isEmpty ||
+            uri.userInfo.isNotEmpty) {
+          throw const FormatException('Ссылка подписки должна использовать HTTPS.');
+        }
+        if (await _confirmLink(_t('Добавить подписку?', 'Add subscription?'),
+            '${uri.host}\n${_t('Приложение загрузит профиль с этого адреса.', 'The app will download a profile from this host.')}')) {
+          await _importInput('', link.value!);
+        }
+        return;
+      case BMrayLinkAction.importBase64:
+        final item = _store.importEncoded(link.value!);
+        if (!await _confirmLink(_t('Добавить конфигурацию?', 'Add configuration?'),
+            '${item.nodes.length} ${_t('серверов', 'servers')}')) return;
+        await _perform(() async {
+          final next = [..._subscriptions, item];
+          await _store.save(next);
+          if (mounted) setState(() {
+            _subscriptions = next;
+            _subscriptionId = item.id;
+            _nodeIndex = _firstUsableIndex(item);
+            _expandedSubscriptionIds.add(item.id);
+          });
+          _rememberSelection();
+        });
+        return;
+      case BMrayLinkAction.addRouting:
+        final data = jsonDecode(link.value!);
+        if (data is! Map) throw const FormatException('Неверный профиль маршрутизации.');
+        final profile = SplitProfile.fromJson(Map<String, dynamic>.from(data));
+        if (!await _confirmLink(_t('Применить маршрутизацию?', 'Apply routing?'),
+            '${profile.name}\n${_t('Маршрут по умолчанию', 'Default route')}: ${profile.defaultRoute}')) return;
+        final imported = SplitProfile.fromJson({...profile.toJson(),
+          'id': DateTime.now().microsecondsSinceEpoch.toString()});
+        await _activateSplit(imported, add: true);
+        return;
+    }
+  }
+
+  Future<void> _activateSplit(SplitProfile? profile, {bool add = false}) =>
+      _perform(() async {
+    final profiles = add && profile != null ? [..._splitProfiles, profile] : _splitProfiles;
+    await _splitStore.save(profiles, profile?.id);
+    if (!mounted) return;
+    setState(() { _splitProfiles = profiles; _activeSplit = profile; });
+    _localGeoip = await _geoIpFiles.available({'cn', ...?profile?.geoipCodes});
+    _rememberSelection();
+    if (_status.state == VpnState.connected) {
+      await _vpn.stop();
+      await _waitForDisconnect();
+      await _startSelected();
+    }
+  });
+
   Future<void> _add() async {
     final name = TextEditingController();
     final url = TextEditingController();
@@ -542,6 +678,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (item.directRules.isNotEmpty && node['type'] != 'auto') {
         (config['route']['rules'] as List).addAll(item.directRules);
       }
+      applySplitProfile(config, _activeSplit, localGeoip: _localGeoip);
       return (configJson: jsonEncode(config),
           xrayJson: bridge == null ? null : jsonEncode(bridge.xray));
   }
@@ -1138,6 +1275,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           8 => _t('Прокси для приложений', 'Per-app proxy'),
           9 => _t('Язык', 'Language'),
           10 => _t('Темы', 'Themes'),
+          11 => _t('Раздельное туннелирование', 'Split tunneling'),
           _ => _t('Настройки', 'Settings'),
         }),
         actions: [
@@ -1157,6 +1295,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         8 => _perAppView(),
         9 => _languageView(),
         10 => _themesView(),
+        11 => _splitView(),
         _ => _settingsView(),
       }) : SafeArea(child: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
@@ -1290,6 +1429,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _t('Логи ядра и VPN', 'Core and VPN logs'),
         Icons.description_outlined, 4),
     _settingsHeading(_t('Настройки туннеля', 'Tunnel settings')),
+    _settingsEntry(_t('Раздельное туннелирование', 'Split tunneling'),
+        _t('Домены, IP и GeoIP для прямого и VPN маршрута',
+          'Domains, IP and GeoIP for direct and VPN routes'),
+        Icons.alt_route_rounded, 11),
     if (Platform.isAndroid) ListTile(
       leading: const Icon(Icons.power_settings_new_rounded),
       title: Text(_t('Кнопка VPN в быстрых настройках',
@@ -1317,6 +1460,214 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _t('Версии и сведения о системе', 'Versions and system details'),
         Icons.info_outline_rounded, 3),
   ]);
+
+  Widget _splitView() {
+    final profile = _activeSplit;
+    final countries = {'cn', ...?profile?.geoipCodes}.toList()..sort();
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      if (_error != null) Card(color: Theme.of(context).colorScheme.errorContainer,
+        child: Padding(padding: const EdgeInsets.all(12), child: Text(_error!))),
+      Text(_t('Раздельное туннелирование', 'Split tunneling'),
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      Text(_t('Направляйте домены, IP-адреса и страны через VPN или напрямую. '
+          'Правила профиля применяются ко всем приложениям, которые входят в VPN. '
+          'Выбор приложений настраивается отдельно.',
+          'Route domains, IP addresses and countries through VPN or directly. '
+          'Profile rules apply to all apps included in VPN. Choose apps separately.')),
+      const SizedBox(height: 12),
+      Card(child: ListTile(
+        leading: const Icon(Icons.apps_rounded),
+        title: Text(_t('Прокси для выбранных приложений', 'Per-app proxy')),
+        subtitle: Text(_t('Выбрать приложения для VPN или обхода',
+            'Choose apps for VPN or bypass')),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: () {
+          setState(() => _pageIndex = 8);
+          unawaited(_loadInstalledApps());
+        },
+      )),
+      const SizedBox(height: 8),
+      Card(child: ListTile(
+        leading: const Icon(Icons.public_rounded),
+        title: Text(_t('Без профиля', 'No profile')),
+        subtitle: Text(_t('Стандартная маршрутизация VPN', 'Default VPN routing')),
+        trailing: profile == null ? const Icon(Icons.check_circle_rounded) : null,
+        onTap: _busy ? null : () => _activateSplit(null),
+      )),
+      for (final entry in _splitProfiles) Card(child: ListTile(
+        leading: Icon(entry.id == profile?.id ? Icons.check_circle_rounded :
+            Icons.alt_route_rounded),
+        title: Text(entry.name),
+        subtitle: Text(entry.defaultRoute == 'proxy' ? _t(
+            'По умолчанию: VPN', 'Default: VPN') : _t(
+            'По умолчанию: напрямую', 'Default: direct')),
+        onTap: _busy ? null : () => _activateSplit(entry),
+        trailing: PopupMenuButton<String>(
+          onSelected: (action) {
+            if (action == 'edit') _editSplitProfile(entry);
+            if (action == 'delete') _deleteSplitProfile(entry);
+          },
+          itemBuilder: (_) => [
+            PopupMenuItem(value: 'edit', child: Text(_t('Изменить', 'Edit'))),
+            PopupMenuItem(value: 'delete', child: Text(_t('Удалить', 'Delete'))),
+          ],
+        ),
+      )),
+      const SizedBox(height: 12),
+      FilledButton.icon(onPressed: _busy ? null : () => _editSplitProfile(null),
+        icon: const Icon(Icons.add_rounded),
+        label: Text(_t('Создать профиль', 'Create profile'))),
+      const SizedBox(height: 24),
+      Text('GeoIP', style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      Text(_t('Файлы GeoIP используются для правил по странам. При первой '
+          'загрузке ядро может получить их из сети. Если загрузка не удалась, '
+          'скачайте их здесь заново. Уже скачанные файлы сохраняются на устройстве.',
+          'GeoIP files are used for country rules. The core can fetch them '
+          'on first use. If that fails, download them again here. Downloaded '
+          'files stay on your device.')),
+      const SizedBox(height: 8),
+      Text('${_t('Страны', 'Countries')}: ${countries.join(', ').toUpperCase()}'),
+      Text('${_t('Сохранено', 'Saved')}: ${_localGeoip.keys.join(', ').isEmpty ? '—' : _localGeoip.keys.join(', ')}'),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(onPressed: _geoDownloading ? null : _redownloadGeoIp,
+        icon: _geoDownloading ? const SizedBox(width: 18, height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2)) :
+            const Icon(Icons.download_rounded),
+        label: Text(_t('Скачать GeoIP заново', 'Download GeoIP again'))),
+      const SizedBox(height: 24),
+      Text(_t('Ссылки bmray://', 'bmray:// links'),
+          style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      const SelectableText('bmray://app/open\nbmray://app/close\n'
+          'bmray://vpn/on\nbmray://vpn/off\nbmray://vpn/toggle\n'
+          'bmray://import/url?url=<HTTPS URL>\n'
+          'bmray://import/base64?data=<Base64URL UTF-8>\n'
+          'bmray://routing/add?data=<Base64URL UTF-8 JSON>'),
+      Text(_t('Команды из внешних ссылок требуют подтверждения. Профиль '
+          'маршрутизации содержит поля name, defaultRoute (proxy/direct), '
+          'directDomains, proxyDomains, directIp, proxyIp, directGeoip, proxyGeoip.',
+          'External commands require confirmation. A routing profile uses '
+          'name, defaultRoute (proxy/direct), directDomains, proxyDomains, '
+          'directIp, proxyIp, directGeoip and proxyGeoip.')),
+    ]);
+  }
+
+  Future<void> _redownloadGeoIp() async {
+    if (_geoDownloading) return;
+    setState(() { _geoDownloading = true; _error = null; });
+    try {
+      await _geoIpFiles.redownload({'cn', ...?_activeSplit?.geoipCodes});
+      final local = await _geoIpFiles.available({'cn', ...?_activeSplit?.geoipCodes});
+      if (!mounted) return;
+      setState(() => _localGeoip = local);
+      if (_status.state == VpnState.connected && _activeSplit != null) {
+        await _vpn.stop();
+        await _waitForDisconnect();
+        await _startSelected();
+      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_t('GeoIP обновлён', 'GeoIP updated'))));
+    } catch (error) {
+      if (mounted) setState(() => _error = '${_t('Не удалось скачать GeoIP', 'GeoIP download failed')}: $error');
+    } finally {
+      if (mounted) setState(() => _geoDownloading = false);
+    }
+  }
+
+  Future<void> _deleteSplitProfile(SplitProfile entry) async {
+    if (!await _confirmLink(_t('Удалить профиль?', 'Delete profile?'), entry.name)) return;
+    await _perform(() async {
+      final next = _splitProfiles.where((e) => e.id != entry.id).toList();
+      final wasActive = _activeSplit?.id == entry.id;
+      final active = wasActive ? null : _activeSplit;
+      await _splitStore.save(next, active?.id);
+      if (mounted) setState(() { _splitProfiles = next; _activeSplit = active; });
+      if (wasActive && _status.state == VpnState.connected) {
+        await _vpn.stop();
+        await _waitForDisconnect();
+        await _startSelected();
+      }
+    });
+  }
+
+  Future<void> _editSplitProfile(SplitProfile? current) async {
+    final name = TextEditingController(text: current?.name ?? '');
+    final directDomains = TextEditingController(text: current?.directDomains.join('\n') ?? '');
+    final proxyDomains = TextEditingController(text: current?.proxyDomains.join('\n') ?? '');
+    final directIp = TextEditingController(text: current?.directIp.join('\n') ?? '');
+    final proxyIp = TextEditingController(text: current?.proxyIp.join('\n') ?? '');
+    final directGeo = TextEditingController(text: current?.directGeoip.join(', ') ?? '');
+    final proxyGeo = TextEditingController(text: current?.proxyGeoip.join(', ') ?? '');
+    var route = current?.defaultRoute ?? 'proxy';
+    String? error;
+    final saved = await showDialog<SplitProfile>(context: context,
+      builder: (dialog) => StatefulBuilder(builder: (dialog, refresh) => AlertDialog(
+        title: Text(_t('Профиль маршрутизации', 'Routing profile')),
+        content: SizedBox(width: 500, child: SingleChildScrollView(child: Column(
+          mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: name, decoration: InputDecoration(
+              labelText: _t('Название', 'Name'))),
+            DropdownButtonFormField<String>(initialValue: route,
+              decoration: InputDecoration(labelText: _t('Маршрут по умолчанию', 'Default route')),
+              items: [DropdownMenuItem(value: 'proxy', child: Text(_t('VPN', 'VPN'))),
+                DropdownMenuItem(value: 'direct', child: Text(_t('Напрямую', 'Direct')))],
+              onChanged: (value) { if (value != null) route = value; }),
+            _splitInput(directDomains, _t('Домены напрямую', 'Direct domains'),
+                _t('По одному на строке, например example.com', 'One per line, e.g. example.com')),
+            _splitInput(proxyDomains, _t('Домены через VPN', 'VPN domains'), ''),
+            _splitInput(directIp, _t('IP/CIDR напрямую', 'Direct IP/CIDR'), '192.0.2.0/24'),
+            _splitInput(proxyIp, _t('IP/CIDR через VPN', 'VPN IP/CIDR'), ''),
+            _splitInput(directGeo, _t('Страны напрямую', 'Direct countries'), 'ru, cn'),
+            _splitInput(proxyGeo, _t('Страны через VPN', 'VPN countries'), 'us, de'),
+            if (error != null) Text(error!, style: TextStyle(color: Theme.of(dialog).colorScheme.error)),
+          ]))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog), child: Text(_t('Отмена', 'Cancel'))),
+          FilledButton(onPressed: () {
+            List<String> lines(TextEditingController input) => input.text.split(RegExp(r'[,\n]'))
+                .map((v) => v.trim()).where((v) => v.isNotEmpty).toList();
+            try {
+              Navigator.pop(dialog, SplitProfile.fromJson({
+                'id': current?.id, 'name': name.text, 'defaultRoute': route,
+                'directDomains': lines(directDomains), 'proxyDomains': lines(proxyDomains),
+                'directIp': lines(directIp), 'proxyIp': lines(proxyIp),
+                'directGeoip': lines(directGeo), 'proxyGeoip': lines(proxyGeo),
+              }));
+            } on FormatException catch (e) { refresh(() => error = e.message); }
+          }, child: Text(_t('Сохранить', 'Save'))),
+        ],
+      )));
+    for (final input in [name, directDomains, proxyDomains, directIp, proxyIp, directGeo, proxyGeo]) {
+      input.dispose();
+    }
+    if (saved == null) return;
+    if (current != null && current.id == _activeSplit?.id) {
+      await _perform(() async {
+        final next = _splitProfiles.map((e) => e.id == saved.id ? saved : e).toList();
+        await _splitStore.save(next, saved.id);
+        if (mounted) setState(() { _splitProfiles = next; _activeSplit = saved; });
+        _localGeoip = await _geoIpFiles.available({'cn', ...saved.geoipCodes});
+        if (_status.state == VpnState.connected) {
+          await _vpn.stop(); await _waitForDisconnect(); await _startSelected();
+        }
+      });
+    } else {
+      await _perform(() async {
+        final next = current == null ? [..._splitProfiles, saved] :
+            _splitProfiles.map((e) => e.id == saved.id ? saved : e).toList();
+        await _splitStore.save(next, _activeSplit?.id);
+        if (mounted) setState(() => _splitProfiles = next);
+      });
+    }
+  }
+
+  Widget _splitInput(TextEditingController input, String label, String hint) =>
+      Padding(padding: const EdgeInsets.only(top: 12), child: TextField(
+        controller: input, minLines: 1, maxLines: 3,
+        decoration: InputDecoration(labelText: label, hintText: hint),
+      ));
 
   Future<void> _addQuickTile() async {
     bool added = false;
