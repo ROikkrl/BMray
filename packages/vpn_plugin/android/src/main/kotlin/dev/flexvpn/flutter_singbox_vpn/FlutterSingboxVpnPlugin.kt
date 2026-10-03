@@ -154,38 +154,47 @@ class FlutterSingboxVpnPlugin :
                 result.success(activeVpn && SingBoxVpnService.state != "connected")
             }
             "listApps" -> {
-                val pm = context.packageManager
-                val apps = pm.getInstalledApplications(0).asSequence()
-                    .filter { it.packageName != context.packageName }
-                    .map { app -> mapOf(
-                        "packageName" to app.packageName,
-                        "label" to pm.getApplicationLabel(app).toString(),
-                        "system" to ((app.flags and (ApplicationInfo.FLAG_SYSTEM or
-                            ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0),
-                    ) }
-                    .sortedBy { it["label"].toString().lowercase() }
-                    .toList()
-                result.success(apps)
+                probes.execute {
+                    try {
+                        val pm = context.packageManager
+                        val apps = pm.getInstalledApplications(0).asSequence()
+                            .filter { it.packageName != context.packageName }
+                            .map { app -> mapOf(
+                                "packageName" to app.packageName,
+                                "label" to pm.getApplicationLabel(app).toString(),
+                                "system" to ((app.flags and (ApplicationInfo.FLAG_SYSTEM or
+                                    ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0),
+                            ) }
+                            .sortedBy { it["label"].toString().lowercase() }
+                            .toList()
+                        mainHandler.post { result.success(apps) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.error("list_apps", e.message, null) }
+                    }
+                }
             }
             "appIcon" -> {
                 val packageName = call.argument<String>("packageName")
                 if (packageName.isNullOrBlank()) {
                     result.success(null)
                 } else {
-                    try {
-                        val icon = context.packageManager.getApplicationIcon(packageName)
-                        val pixels = (48 * context.resources.displayMetrics.density)
-                            .toInt().coerceIn(48, 144)
-                        val image = Bitmap.createBitmap(pixels, pixels, Bitmap.Config.ARGB_8888)
-                        val canvas = Canvas(image)
-                        icon.setBounds(0, 0, pixels, pixels)
-                        icon.draw(canvas)
-                        val bytes = ByteArrayOutputStream()
-                        image.compress(Bitmap.CompressFormat.PNG, 90, bytes)
-                        image.recycle()
-                        result.success(bytes.toByteArray())
-                    } catch (_: Exception) {
-                        result.success(null)
+                    probes.execute {
+                        val data = try {
+                            val icon = context.packageManager.getApplicationIcon(packageName)
+                            val pixels = (48 * context.resources.displayMetrics.density)
+                                .toInt().coerceIn(48, 144)
+                            val image = Bitmap.createBitmap(pixels, pixels, Bitmap.Config.ARGB_8888)
+                            try {
+                                val canvas = Canvas(image)
+                                icon.setBounds(0, 0, pixels, pixels)
+                                icon.draw(canvas)
+                                ByteArrayOutputStream().use { bytes ->
+                                    image.compress(Bitmap.CompressFormat.PNG, 90, bytes)
+                                    bytes.toByteArray()
+                                }
+                            } finally { image.recycle() }
+                        } catch (_: Exception) { null }
+                        mainHandler.post { result.success(data) }
                     }
                 }
             }
@@ -267,14 +276,20 @@ class FlutterSingboxVpnPlugin :
                             }
                         }
                         bridge = if (active != null) BoxPlatformInterface(active) else BoxPlatformInterface(context)
-                        val delay = Libbox.probeProxyGET(
-                            cfg,
-                            "https://www.gstatic.com/generate_204\n" +
-                                "https://cp.cloudflare.com/generate_204\n" +
-                                "https://max.ru/",
-                            timeoutMillis,
-                            bridge,
-                        )
+                        // libbox accepts one URL per probe, not a newline-separated list.
+                        // Retry a second 204 endpoint if the first is blocked on this network.
+                        var lastError: Exception? = null
+                        var delay: Int? = null
+                        for (url in listOf("https://www.gstatic.com/generate_204",
+                                "https://cp.cloudflare.com/generate_204")) {
+                            try {
+                                delay = Libbox.probeProxyGET(cfg, url, timeoutMillis, bridge)
+                                break
+                            } catch (e: Exception) {
+                                lastError = e
+                            }
+                        }
+                        if (delay == null) throw lastError ?: IllegalStateException("No proxy response")
                         mainHandler.post { result.success(mapOf("delay" to delay)) }
                     } catch (e: Exception) {
                         val detail = e.message?.lowercase() ?: ""

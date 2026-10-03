@@ -1646,7 +1646,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       (_showSystemApps || app['system'] != true) &&
       (query.isEmpty || app['label'].toString().toLowerCase().contains(query) ||
         app['packageName'].toString().toLowerCase().contains(query))).toList();
-    return ListView(padding: const EdgeInsets.all(16), children: [
+    final controls = <Widget>[
       Text(_t('Прокси для выбранных приложений', 'Per-app proxy'),
           style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
       const SizedBox(height: 12),
@@ -1689,7 +1689,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (_appsLoading) const Center(child: CircularProgressIndicator()),
       if (!_appsLoading && _installedApps.isEmpty) Text(_t(
           'Список приложений недоступен.', 'App list is unavailable.')),
-      for (final app in shown) CheckboxListTile(
+    ];
+    Widget appTile(Map<String, dynamic> app) => CheckboxListTile(
         dense: true,
         secondary: FutureBuilder<Uint8List?>(
           future: _appIcons.putIfAbsent(app['packageName'].toString(),
@@ -1708,11 +1709,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (value == true) _perAppPackages.add(id);
           else _perAppPackages.remove(id);
         }),
-      ),
+      );
+    final footer = <Widget>[
       const SizedBox(height: 12),
       FilledButton(onPressed: _busy ? null : _savePerAppSettings,
         child: Text(_t('Сохранить и применить', 'Save and apply'))),
-    ]);
+    ];
+    return ListView.builder(
+      key: const ValueKey('per-app-view'),
+      padding: const EdgeInsets.all(16),
+      itemCount: controls.length + shown.length + footer.length,
+      itemBuilder: (context, index) {
+        if (index < controls.length) return controls[index];
+        index -= controls.length;
+        if (index < shown.length) return appTile(shown[index]);
+        return footer[index - shown.length];
+      },
+    );
   }
 
   Widget _languageView() => ListView(padding: const EdgeInsets.all(16), children: [
