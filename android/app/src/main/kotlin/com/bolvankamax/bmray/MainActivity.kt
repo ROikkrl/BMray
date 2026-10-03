@@ -23,6 +23,15 @@ class MainActivity : FlutterActivity() {
                     if (requested) intent?.action = Intent.ACTION_MAIN
                     result.success(requested)
                 }
+                "consumeDeepLink" -> {
+                    val incoming = intent?.takeIf { it.action == Intent.ACTION_VIEW &&
+                        it.data?.scheme.equals("bmray", ignoreCase = true) }?.dataString
+                    if (incoming != null) {
+                        intent?.action = Intent.ACTION_MAIN
+                        intent?.data = null
+                    }
+                    result.success(incoming?.takeIf { it.length <= 1024 * 1024 })
+                }
                 "requestAdd" -> {
                     if (Build.VERSION.SDK_INT < 33) {
                         result.success(false)
@@ -50,6 +59,12 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         if (intent.action == BMrayQuickTileService.ACTION_CONNECT_IN_APP) {
             tileChannel?.invokeMethod("connect", null)
+        } else if (intent.action == Intent.ACTION_VIEW &&
+            intent.data?.scheme.equals("bmray", ignoreCase = true)) {
+            val link = intent.dataString?.takeIf { it.length <= 1024 * 1024 }
+            intent.action = Intent.ACTION_MAIN
+            intent.data = null
+            if (link != null) tileChannel?.invokeMethod("deepLink", link)
         }
     }
 

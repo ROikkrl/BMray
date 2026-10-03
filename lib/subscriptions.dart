@@ -226,6 +226,17 @@ class SubscriptionStore {
     );
   }
 
+  Subscription importEncoded(String content, {String name = ''}) {
+    final parsed = _parse(content);
+    if (parsed.nodes.isEmpty) {
+      throw const FormatException('В конфигурации нет распознанных серверов.');
+    }
+    return Subscription(id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: name.isEmpty ? (parsed.name ?? 'Импорт Base64') : name,
+      url: content, nodes: parsed.nodes, directRules: parsed.directRules,
+      notice: parsed.notice, rawResponse: content, customName: name.isNotEmpty);
+  }
+
   Future<void> refresh(Subscription item) async {
     if (!item.isRemote) {
       throw const FormatException(

@@ -24,6 +24,13 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="bmray" />
+            </intent-filter>
         </activity>
         <activity-alias android:name=".LauncherClassic"
             android:targetActivity=".MainActivity" android:exported="true"
